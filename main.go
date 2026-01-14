@@ -9,11 +9,23 @@ import (
 	"github.com/mheap/agent-en-place/internal/agent"
 )
 
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 func main() {
 	debug := flag.Bool("debug", false, "show Docker build output instead of hiding it")
 	rebuild := flag.Bool("rebuild", false, "force rebuilding the Docker image")
 	dockerfile := flag.Bool("dockerfile", false, "print the generated Dockerfile and exit")
+	showVersion := flag.Bool("version", false, "show version information")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("agent-en-place version %s (commit: %s, built: %s)\n", version, commit, date)
+		os.Exit(0)
+	}
 
 	args := flag.Args()
 	if len(args) != 1 {

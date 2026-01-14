@@ -11,7 +11,13 @@ Build on-demand Docker containers for projects + agentic coding using `mise`.
 
 ## Installation
 
-Build from source:
+### Homebrew (macOS/Linux)
+
+```bash
+brew install mheap/tap/agent-en-place
+```
+
+### Build from source
 
 ```bash
 git clone https://github.com/mheap/agent-en-place
@@ -20,6 +26,10 @@ go build
 # Move binary to your PATH
 mv agent-en-place /usr/local/bin/
 ```
+
+### Download binary
+
+Download the latest release for your platform from [GitHub Releases](https://github.com/mheap/agent-en-place/releases).
 
 ## Usage
 

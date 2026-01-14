@@ -1,0 +1,115 @@
+# GoReleaser configuration for agent-en-place
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: agent-en-place
+    main: .
+    binary: agent-en-place
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+      - "386"
+    ignore:
+      # macOS doesn't support 386
+      - goos: darwin
+        goarch: "386"
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
+archives:
+  - id: tgz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+    format: tar.gz
+    files:
+      - LICENSE
+      - README.md
+  
+  - id: zip
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+    format: zip
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  disable: true
+
+brews:
+  - ids:
+      - tgz
+    repository:
+      owner: mheap
+      name: homebrew-tap
+      token: "{{ .Env.PAT }}"
+    directory: Formula
+    homepage: https://github.com/mheap/agent-en-place
+    description: Build on-demand Docker containers for projects + agentic coding using mise
+    license: MIT
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
+    install: |
+      bin.install "agent-en-place"
+    caveats: |
+      To use agent-en-place, add this function to your shell config (.bashrc, .zshrc, etc.):
+
+        function vibe() { bash -lc "$(agent-en-place $1)" }
+
+      Then run: vibe <provider>
+      Supported providers: codex, opencode, copilot
+    test: |
+      system "#{bin}/agent-en-place", "--version"
+
+release:
+  github:
+    owner: mheap
+    name: agent-en-place
+  draft: false
+  prerelease: auto
+  mode: replace
+  header: |
+    ## Release {{ .Tag }} ({{ .Date }})
+
+    Welcome to this new release of agent-en-place!
+  footer: |
+    ## Installation
+
+    ### Homebrew (macOS/Linux)
+    ```bash
+    brew install mheap/tap/agent-en-place
+    ```
+
+    ### Manual Installation
+    Download the appropriate binary for your platform from the assets above.
