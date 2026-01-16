@@ -94,6 +94,14 @@ The tool also recognizes language-specific version files:
 
 Currently supported providers:
 
+### `claude`
+
+- **Package**: `@anthropic-ai/claude-code`
+- **Command**: `claude --dangerously-skip-permissions`
+- **Requirements**: None
+- **Configuration**: Stored in `~/.claude` and `~/.claude.json`
+- **Environment**: Uses `ANTHROPIC_API_KEY` if set, or OAuth credentials from config
+
 ### `codex`
 
 - **Package**: `@openai/codex`
