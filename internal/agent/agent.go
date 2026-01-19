@@ -471,6 +471,7 @@ var idiomaticToolFiles = map[string][]string{
 	"python":  {".python-version", ".python-versions"},
 	"ruby":    {".ruby-version", "Gemfile"},
 	"yarn":    {".yvmrc"},
+	"bun":     {".bun-version"},
 }
 
 func parseIdiomaticFiles() []idiomaticInfo {
