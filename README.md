@@ -1,6 +1,6 @@
 # agent-en-place
 
-Build on-demand Docker containers for projects + agentic coding using `mise`.
+Build on-demand Docker containers for projects + agentic coding using [`mise`](https://github.com/jdx/mise).
 
 ## Prerequisites
 
