@@ -50,9 +50,36 @@ The tool will:
 
 ## Configuration
 
-`agent-en-place` automatically detects tool versions from multiple configuration file formats:
+`agent-en-place` can be customized via YAML configuration files. See [docs/config.md](docs/config.md) for the full configuration reference.
 
-### mise/asdf Configuration
+### Config File Locations
+
+Configuration files are loaded and merged in order (later files override earlier):
+
+1. **Embedded defaults** - Built into the binary
+2. **User config** - `~/.config/agent-en-place.yaml`
+3. **Project config** - `./.agent-en-place.yaml`
+4. **Explicit config** - `--config <path>`
+
+### Quick Examples
+
+**Add a custom agent** (`~/.config/agent-en-place.yaml`):
+
+```yaml
+agents:
+  aider:
+    packageName: pipx:aider-chat
+    command: aider --yes
+    configDir: .aider
+    envVars:
+      - OPENAI_API_KEY
+    depends:
+      - python
+```
+
+### Tool Version Detection
+
+`agent-en-place` also automatically detects tool versions from project configuration files:
 
 **`.tool-versions`** (asdf/mise format)
 
@@ -70,9 +97,7 @@ node = "20.11.0"
 python = "3.12.0"
 ```
 
-### Idiomatic Version Files
-
-The tool also recognizes language-specific version files:
+**Idiomatic version files** are also recognized:
 
 | File               | Language | Example        |
 | ------------------ | -------- | -------------- |
@@ -173,6 +198,14 @@ Print the generated Dockerfile and exit without building. Useful for debugging o
 
 ```bash
 agent-en-place --dockerfile codex
+```
+
+**`--config`**
+
+Use a specific configuration file. See [docs/config.md](docs/config.md) for configuration options.
+
+```bash
+agent-en-place --config ./my-config.yaml claude
 ```
 
 ### Combining Flags
