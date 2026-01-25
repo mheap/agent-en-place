@@ -487,3 +487,249 @@ func TestParseMiseToml_NilSpec(t *testing.T) {
 		t.Errorf("expected nil for nil spec, got %v", specs)
 	}
 }
+
+// TestBuildMiseConfig_AllAgents tests mise.toml generation for each agent in config.yaml
+func TestBuildMiseConfig_AllAgents(t *testing.T) {
+	imgCfg := loadTestConfig(t)
+
+	tests := []struct {
+		name           string
+		expectedTools  []string // Tools that must be present in output
+		notExpectTools []string // Tools that must NOT be present
+	}{
+		{
+			name:          "codex",
+			expectedTools: []string{"npm:@openai/codex", "node", "python"},
+		},
+		{
+			name:          "opencode",
+			expectedTools: []string{"npm:opencode-ai", "node", "python"},
+		},
+		{
+			name:          "copilot",
+			expectedTools: []string{"npm:@github/copilot", "node", "python"},
+		},
+		{
+			name:          "claude",
+			expectedTools: []string{"npm:@anthropic-ai/claude-code", "node", "python"},
+		},
+		{
+			name:          "gemini",
+			expectedTools: []string{"npm:@google/gemini-cli", "node", "python"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec := getToolSpec(t, imgCfg, tt.name)
+
+			// Build collection with resolved tool dependencies (simulating real behavior)
+			toolDeps := imgCfg.ResolveToolDeps(tt.name)
+			idiomaticInfos := make([]idiomaticInfo, 0, len(toolDeps))
+			for _, dep := range toolDeps {
+				idiomaticInfos = append(idiomaticInfos, idiomaticInfo{
+					tool:      dep.name,
+					version:   dep.version,
+					configKey: dep.name,
+				})
+			}
+
+			collection := collectResult{
+				specs:          toolDeps,
+				idiomaticInfos: idiomaticInfos,
+			}
+
+			// Build mise.toml without user file
+			data, err := buildMiseConfig(nil, collection, spec)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			result := string(data)
+
+			// Verify [tools] section exists
+			if !strings.Contains(result, "[tools]") {
+				t.Errorf("expected [tools] section, got:\n%s", result)
+			}
+
+			// Verify all expected tools are present
+			for _, tool := range tt.expectedTools {
+				if !strings.Contains(result, tool) {
+					t.Errorf("expected tool %q to be present, got:\n%s", tool, result)
+				}
+			}
+
+			// Verify no unexpected tools are present
+			for _, tool := range tt.notExpectTools {
+				if strings.Contains(result, tool) {
+					t.Errorf("did not expect tool %q to be present, got:\n%s", tool, result)
+				}
+			}
+		})
+	}
+}
+
+// TestBuildMiseConfig_AllAgents_WithUserMise tests that user mise.toml is correctly merged for each agent
+func TestBuildMiseConfig_AllAgents_WithUserMise(t *testing.T) {
+	imgCfg := loadTestConfig(t)
+
+	// User mise.toml with custom tools
+	userMise := []byte(`[tools]
+ruby = "3.2.0"
+go = "1.21.0"
+`)
+
+	agents := []string{"codex", "opencode", "copilot", "claude", "gemini"}
+
+	for _, agentName := range agents {
+		t.Run(agentName, func(t *testing.T) {
+			spec := getToolSpec(t, imgCfg, agentName)
+
+			// Build collection with resolved tool dependencies
+			toolDeps := imgCfg.ResolveToolDeps(agentName)
+			idiomaticInfos := make([]idiomaticInfo, 0, len(toolDeps))
+			for _, dep := range toolDeps {
+				idiomaticInfos = append(idiomaticInfos, idiomaticInfo{
+					tool:      dep.name,
+					version:   dep.version,
+					configKey: dep.name,
+				})
+			}
+
+			collection := collectResult{
+				specs:          toolDeps,
+				idiomaticInfos: idiomaticInfos,
+			}
+
+			// Build mise.toml with user file
+			data, err := buildMiseConfig(userMise, collection, spec)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			result := string(data)
+
+			// User tools should be preserved
+			if !strings.Contains(result, "ruby") || !strings.Contains(result, "3.2.0") {
+				t.Errorf("expected user's ruby tool to be preserved, got:\n%s", result)
+			}
+			if !strings.Contains(result, "go") || !strings.Contains(result, "1.21.0") {
+				t.Errorf("expected user's go tool to be preserved, got:\n%s", result)
+			}
+
+			// Agent's primary tool should be added
+			if !strings.Contains(result, spec.ConfigKey) {
+				t.Errorf("expected agent tool %q to be added, got:\n%s", spec.ConfigKey, result)
+			}
+
+			// Dependencies should be added
+			if !strings.Contains(result, "node") {
+				t.Errorf("expected node dependency to be added, got:\n%s", result)
+			}
+			if !strings.Contains(result, "python") {
+				t.Errorf("expected python dependency to be added, got:\n%s", result)
+			}
+		})
+	}
+}
+
+// TestBuildMiseConfig_AllAgents_UserOverridesDefaults tests that user versions override agent defaults
+func TestBuildMiseConfig_AllAgents_UserOverridesDefaults(t *testing.T) {
+	imgCfg := loadTestConfig(t)
+
+	// User mise.toml with custom node version (should override the default "latest")
+	userMise := []byte(`[tools]
+node = "18.19.0"
+python = "3.11.0"
+`)
+
+	agents := []string{"codex", "opencode", "copilot", "claude", "gemini"}
+
+	for _, agentName := range agents {
+		t.Run(agentName, func(t *testing.T) {
+			spec := getToolSpec(t, imgCfg, agentName)
+
+			// Build collection with resolved tool dependencies (these have "latest" versions)
+			toolDeps := imgCfg.ResolveToolDeps(agentName)
+			idiomaticInfos := make([]idiomaticInfo, 0, len(toolDeps))
+			for _, dep := range toolDeps {
+				idiomaticInfos = append(idiomaticInfos, idiomaticInfo{
+					tool:      dep.name,
+					version:   dep.version,
+					configKey: dep.name,
+				})
+			}
+
+			collection := collectResult{
+				specs:          toolDeps,
+				idiomaticInfos: idiomaticInfos,
+			}
+
+			// Build mise.toml with user file
+			data, err := buildMiseConfig(userMise, collection, spec)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			result := string(data)
+
+			// User's node version should take precedence
+			if !strings.Contains(result, "18.19.0") {
+				t.Errorf("expected user's node version 18.19.0, got:\n%s", result)
+			}
+
+			// User's python version should take precedence
+			if !strings.Contains(result, "3.11.0") {
+				t.Errorf("expected user's python version 3.11.0, got:\n%s", result)
+			}
+
+			// Default "latest" version for node/python should NOT appear as a separate entry
+			// (The agent tool itself may still have "latest")
+			nodeLatestCount := strings.Count(result, `node = "latest"`)
+			pythonLatestCount := strings.Count(result, `python = "latest"`)
+			if nodeLatestCount > 0 {
+				t.Errorf("expected user node version to override default, but found 'node = \"latest\"' in:\n%s", result)
+			}
+			if pythonLatestCount > 0 {
+				t.Errorf("expected user python version to override default, but found 'python = \"latest\"' in:\n%s", result)
+			}
+		})
+	}
+}
+
+// TestBuildMiseConfig_GoldenFiles tests mise.toml generation against golden files for each agent
+func TestBuildMiseConfig_GoldenFiles(t *testing.T) {
+	imgCfg := loadTestConfig(t)
+
+	agents := []string{"codex", "opencode", "copilot", "claude", "gemini"}
+
+	for _, agentName := range agents {
+		t.Run(agentName, func(t *testing.T) {
+			spec := getToolSpec(t, imgCfg, agentName)
+
+			// Build collection with resolved tool dependencies
+			toolDeps := imgCfg.ResolveToolDeps(agentName)
+			idiomaticInfos := make([]idiomaticInfo, 0, len(toolDeps))
+			for _, dep := range toolDeps {
+				idiomaticInfos = append(idiomaticInfos, idiomaticInfo{
+					tool:      dep.name,
+					version:   dep.version,
+					configKey: dep.name,
+				})
+			}
+
+			collection := collectResult{
+				specs:          toolDeps,
+				idiomaticInfos: idiomaticInfos,
+			}
+
+			// Build mise.toml without user file
+			data, err := buildMiseConfig(nil, collection, spec)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			goldenTest(t, "mise_"+agentName+".golden", string(data))
+		})
+	}
+}
