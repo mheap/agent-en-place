@@ -15,12 +15,13 @@ LABEL com.mheap.agent-en-place.claude="latest"
 WORKDIR /home/agent
 COPY .tool-versions .tool-versions
 COPY mise.toml /home/agent/.config/mise/config.toml
-RUN chown agent:agent .tool-versions /home/agent/.config/mise/config.toml
+COPY mise.agent.toml /home/agent/.config/mise/mise.agent.toml
+RUN chown agent:agent .tool-versions /home/agent/.config/mise/config.toml /home/agent/.config/mise/mise.agent.toml
 COPY assets/agent-entrypoint.sh /usr/local/bin/agent-entrypoint
 RUN chmod +x /usr/local/bin/agent-entrypoint
 USER agent
 RUN mise trust
-RUN mise install
+RUN mise install && mise install --env agent
 RUN printf 'export PATH="/home/agent/.local/share/mise/shims:/home/agent/.local/bin:$PATH"\n' > /home/agent/.bashrc
 RUN printf 'source ~/.bashrc\n' > /home/agent/.bash_profile
 WORKDIR /workdir
