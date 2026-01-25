@@ -66,6 +66,12 @@ var toolSpecs = map[string]ToolSpec{
 		AdditionalMounts: []string{".claude.json"},
 		EnvVars:          []string{"ANTHROPIC_API_KEY"},
 	},
+	"gemini": {
+		MiseToolName: "npm:@google/gemini-cli",
+		ConfigKey:    "npm:@google/gemini-cli",
+		Command:      "gemini --yolo",
+		ConfigDir:    ".gemini",
+	},
 }
 
 func Run(cfg Config) error {
@@ -187,7 +193,7 @@ func makeBuildContext(toolFile, miseFile *fileSpec, collection collectResult, ne
 
 func buildDockerfile(hasTool, hasMise, needLibatomic bool, collection collectResult, spec ToolSpec) string {
 	var b strings.Builder
-	packages := []string{"curl", "ca-certificates", "gnupg", "apt-transport-https"}
+	packages := []string{"curl", "ca-certificates", "git", "gnupg", "apt-transport-https"}
 	if needLibatomic {
 		packages = append(packages, "libatomic1")
 	}
@@ -479,6 +485,7 @@ var idiomaticToolFiles = map[string][]string{
 	"python":  {".python-version", ".python-versions"},
 	"ruby":    {".ruby-version", "Gemfile"},
 	"yarn":    {".yvmrc"},
+	"bun":     {".bun-version"},
 }
 
 func parseIdiomaticFiles() []idiomaticInfo {

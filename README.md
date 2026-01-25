@@ -1,6 +1,6 @@
 # agent-en-place
 
-Build on-demand Docker containers for projects + agentic coding using `mise`.
+Build on-demand Docker containers for projects + agentic coding using [`mise`](https://github.com/jdx/mise).
 
 ## Prerequisites
 
@@ -87,6 +87,7 @@ The tool also recognizes language-specific version files:
 | `.crystal-version` | Crystal  | `1.10.0`       |
 | `.exenv-version`   | Elixir   | `1.15.0`       |
 | `.yvmrc`           | Yarn     | `1.22.19`      |
+| `.bun-version`     | Bun      | `1.0.0`        |
 
 **Note**: Node.js is automatically included if not specified, as it's required by all supported AI coding tools.
 
@@ -123,6 +124,13 @@ Currently supported providers:
 - **Requirements**: `gh` CLI authenticated with `gh auth login`
 - **Configuration**: Stored in `~/.copilot`
 - **Environment**: Automatically uses `GH_TOKEN` from `gh` CLI
+
+### `gemini`
+
+- **Package**: `@google/gemini-cli`
+- **Command**: `gemini --yolo`
+- **Configuration**: Stored in `~/.gemini`
+
 
 ## How It Works
 
