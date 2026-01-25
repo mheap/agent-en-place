@@ -727,7 +727,7 @@ func TestBuildAgentMiseConfig_GoldenFiles(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
-			goldenTest(t, "mise_"+agentName+".golden", string(data))
+			goldenTest(t, "mise_agent_"+agentName+".golden", string(data))
 		})
 	}
 }
