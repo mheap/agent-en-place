@@ -3,8 +3,10 @@ FROM debian:12-slim
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates git gnupg apt-transport-https libatomic1
 RUN install -dm 755 /etc/apt/keyrings
 RUN curl -fSs https://mise.jdx.dev/gpg-key.pub | tee /etc/apt/keyrings/mise-archive-keyring.pub >/dev/null
-RUN arch=$(dpkg --print-architecture) && echo "deb [signed-by=/etc/apt/keyrings/mise-archive-keyring.pub arch=$arch] https://mise.jdx.dev/deb stable main" | tee /etc/apt/sources.list.d/mise.list
-RUN apt-get update && apt-get install -y mise
+RUN arch=$(dpkg --print-architecture)
+RUN echo "deb [signed-by=/etc/apt/keyrings/mise-archive-keyring.pub arch=$arch] https://mise.jdx.dev/deb stable main" | tee /etc/apt/sources.list.d/mise.list
+RUN apt-get update
+RUN apt-get install -y mise
 RUN rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -r agent && useradd -m -r -u 1000 -g agent -s /bin/bash agent

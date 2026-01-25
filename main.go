@@ -20,6 +20,7 @@ func main() {
 	rebuild := flag.Bool("rebuild", false, "force rebuilding the Docker image")
 	dockerfile := flag.Bool("dockerfile", false, "print the generated Dockerfile and exit")
 	showVersion := flag.Bool("version", false, "show version information")
+	configPath := flag.String("config", "", "path to config file (overrides default config locations)")
 	flag.Parse()
 
 	if *showVersion {
@@ -29,24 +30,19 @@ func main() {
 
 	args := flag.Args()
 	if len(args) != 1 {
-		fmt.Fprintf(os.Stderr, "usage: %s <tool>\n\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "tool must be one of: claude, codex, opencode, copilot, gemini\n")
+		fmt.Fprintf(os.Stderr, "usage: %s <agent>\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "run 'agent-en-place --help' for available agents\n")
 		os.Exit(1)
 	}
 
 	tool := strings.ToLower(args[0])
-	validTools := map[string]bool{"claude": true, "codex": true, "opencode": true, "copilot": true, "gemini": true}
-	if !validTools[tool] {
-		fmt.Fprintf(os.Stderr, "error: invalid tool '%s'\n", args[0])
-		fmt.Fprintf(os.Stderr, "tool must be one of: claude, codex, opencode, copilot, gemini\n")
-		os.Exit(1)
-	}
 
 	cfg := agent.Config{
 		Debug:          *debug,
 		Rebuild:        *rebuild,
 		DockerfileOnly: *dockerfile,
 		Tool:           tool,
+		ConfigPath:     *configPath,
 	}
 
 	if err := agent.Run(cfg); err != nil {

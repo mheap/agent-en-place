@@ -19,6 +19,9 @@ import (
 //go:embed assets/agent-entrypoint.sh
 var agentEntrypointScript []byte
 
+//go:embed config.yaml
+var defaultConfigYAML []byte
+
 const imageRepository = "mheap/agent-en-place"
 
 type Config struct {
@@ -26,6 +29,7 @@ type Config struct {
 	Rebuild        bool
 	DockerfileOnly bool
 	Tool           string
+	ConfigPath     string
 }
 
 type ToolSpec struct {
@@ -37,65 +41,31 @@ type ToolSpec struct {
 	EnvVars          []string
 }
 
-var toolSpecs = map[string]ToolSpec{
-	"codex": {
-		MiseToolName: "npm:@openai/codex",
-		ConfigKey:    "npm:@openai/codex",
-		Command:      "codex --dangerously-bypass-approvals-and-sandbox",
-		ConfigDir:    ".codex",
-	},
-	"opencode": {
-		MiseToolName:     "npm:opencode-ai",
-		ConfigKey:        "npm:opencode-ai",
-		Command:          "opencode",
-		ConfigDir:        ".config/opencode/",
-		AdditionalMounts: []string{".local/share/opencode"},
-	},
-	"copilot": {
-		MiseToolName: "npm:@github/copilot",
-		ConfigKey:    "npm:@github/copilot",
-		Command:      "copilot --allow-all-tools --allow-all-paths --allow-all-urls",
-		ConfigDir:    ".copilot",
-		EnvVars:      []string{"GH_TOKEN=\"$(gh auth token -h github.com)\""},
-	},
-	"claude": {
-		MiseToolName:     "npm:@anthropic-ai/claude-code",
-		ConfigKey:        "npm:@anthropic-ai/claude-code",
-		Command:          "claude --dangerously-skip-permissions",
-		ConfigDir:        ".claude",
-		AdditionalMounts: []string{".claude.json"},
-		EnvVars:          []string{"ANTHROPIC_API_KEY"},
-	},
-	"gemini": {
-		MiseToolName: "npm:@google/gemini-cli",
-		ConfigKey:    "npm:@google/gemini-cli",
-		Command:      "gemini --yolo",
-		ConfigDir:    ".gemini",
-	},
-}
-
-// miseToolToLabelName maps mise tool names to friendly label names
-var miseToolToLabelName = buildMiseToolToLabelName()
-
-func buildMiseToolToLabelName() map[string]string {
-	m := make(map[string]string)
-	for name, spec := range toolSpecs {
-		m[spec.MiseToolName] = name
-		m[sanitizeTagComponent(spec.MiseToolName)] = name
-	}
-	return m
-}
-
 // getLabelName returns a friendly label name for a tool
+// It extracts the last component from npm package names (e.g., "npm:@openai/codex" -> "codex")
 func getLabelName(toolName string) string {
-	if label, ok := miseToolToLabelName[toolName]; ok {
-		return label
+	// For npm packages like "npm:@openai/codex", extract the last part
+	if idx := strings.LastIndex(toolName, "/"); idx >= 0 {
+		return toolName[idx+1:]
+	}
+	// For simple names like "npm:opencode-ai", strip the prefix
+	if idx := strings.Index(toolName, ":"); idx >= 0 {
+		return toolName[idx+1:]
 	}
 	return toolName
 }
 
 func Run(cfg Config) error {
-	spec := toolSpecs[cfg.Tool]
+	imgCfg, err := LoadMergedConfig(defaultConfigYAML, cfg.ConfigPath)
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	agentCfg, ok := imgCfg.GetAgent(cfg.Tool)
+	if !ok {
+		return fmt.Errorf("unknown agent: %s (available: %s)", cfg.Tool, strings.Join(imgCfg.AgentNames(), ", "))
+	}
+	spec := agentCfg.ToToolSpec()
 
 	toolFile, err := optionalFileSpec(".tool-versions")
 	if err != nil {
@@ -106,10 +76,10 @@ func Run(cfg Config) error {
 		return fmt.Errorf("failed to read mise.toml: %w", err)
 	}
 
-	collection := collectToolSpecs(toolFile, miseFile, spec)
+	collection := collectToolSpecs(toolFile, miseFile, spec, imgCfg, cfg.Tool)
 	hasNode := collectionHasNode(toolFile, miseFile, collection)
 	if cfg.DockerfileOnly {
-		fmt.Print(buildDockerfile(toolFile != nil, miseFile != nil, hasNode, collection, spec))
+		fmt.Print(buildDockerfile(toolFile != nil, miseFile != nil, hasNode, collection, spec, imgCfg))
 		return nil
 	}
 	imageName := buildImageName(collection.specs)
@@ -123,7 +93,7 @@ func Run(cfg Config) error {
 	needBuild := !imageExists(ctx, cli, imageName) || cfg.Rebuild
 
 	if needBuild {
-		buildCtx, err := makeBuildContext(toolFile, miseFile, collection, hasNode, spec)
+		buildCtx, err := makeBuildContext(toolFile, miseFile, collection, hasNode, spec, imgCfg)
 		if err != nil {
 			return fmt.Errorf("failed to prepare build context: %w", err)
 		}
@@ -176,9 +146,9 @@ func Run(cfg Config) error {
 	return nil
 }
 
-func makeBuildContext(toolFile, miseFile *fileSpec, collection collectResult, needsLibatomic bool, spec ToolSpec) (io.Reader, error) {
+func makeBuildContext(toolFile, miseFile *fileSpec, collection collectResult, needsLibatomic bool, spec ToolSpec, imgCfg *ImageConfig) (io.Reader, error) {
 
-	dockerfile := buildDockerfile(toolFile != nil, miseFile != nil, needsLibatomic, collection, spec)
+	dockerfile := buildDockerfile(toolFile != nil, miseFile != nil, needsLibatomic, collection, spec, imgCfg)
 
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
@@ -211,21 +181,28 @@ func makeBuildContext(toolFile, miseFile *fileSpec, collection collectResult, ne
 	return bytes.NewReader(buf.Bytes()), nil
 }
 
-func buildDockerfile(hasTool, hasMise, needLibatomic bool, collection collectResult, spec ToolSpec) string {
+func buildDockerfile(hasTool, hasMise, needLibatomic bool, collection collectResult, spec ToolSpec, imgCfg *ImageConfig) string {
 	var b strings.Builder
-	packages := []string{"curl", "ca-certificates", "git", "gnupg", "apt-transport-https"}
-	if needLibatomic {
-		packages = append(packages, "libatomic1")
+
+	// Use configured base image
+	baseImage := imgCfg.Image.Base
+	if baseImage == "" {
+		baseImage = "debian:12-slim"
 	}
 
-	b.WriteString("FROM debian:12-slim\n\n")
+	// Use configured packages (already includes libatomic1 in default config)
+	packages := imgCfg.Image.Packages
+
+	b.WriteString(fmt.Sprintf("FROM %s\n\n", baseImage))
 	b.WriteString("RUN apt-get update && apt-get install -y --no-install-recommends ")
 	b.WriteString(strings.Join(packages, " "))
 	b.WriteString("\n")
-	b.WriteString("RUN install -dm 755 /etc/apt/keyrings\n")
-	b.WriteString("RUN curl -fSs https://mise.jdx.dev/gpg-key.pub | tee /etc/apt/keyrings/mise-archive-keyring.pub >/dev/null\n")
-	b.WriteString("RUN arch=$(dpkg --print-architecture) && echo \"deb [signed-by=/etc/apt/keyrings/mise-archive-keyring.pub arch=$arch] https://mise.jdx.dev/deb stable main\" | tee /etc/apt/sources.list.d/mise.list\n")
-	b.WriteString("RUN apt-get update && apt-get install -y mise\n")
+
+	// Use configured mise installation commands
+	for _, cmd := range imgCfg.Mise.Install {
+		b.WriteString(fmt.Sprintf("RUN %s\n", cmd))
+	}
+
 	b.WriteString("RUN rm -rf /var/lib/apt/lists/*\n\n")
 	b.WriteString("RUN groupadd -r agent && useradd -m -r -u 1000 -g agent -s /bin/bash agent\n")
 	b.WriteString("ENV HOME=/home/agent\n")
@@ -317,7 +294,7 @@ type idiomaticInfo struct {
 	configKey string
 }
 
-func collectToolSpecs(toolFile, miseFile *fileSpec, spec ToolSpec) collectResult {
+func collectToolSpecs(toolFile, miseFile *fileSpec, spec ToolSpec, imgCfg *ImageConfig, agentName string) collectResult {
 	specs := parseToolVersions(toolFile)
 	specs = append(specs, parseMiseToml(miseFile)...)
 	idiomatic := parseIdiomaticFiles()
@@ -327,11 +304,15 @@ func collectToolSpecs(toolFile, miseFile *fileSpec, spec ToolSpec) collectResult
 		}
 		specs = append(specs, toolDescriptor{name: info.tool, version: info.version})
 	}
+
+	// Add tools from config's dependency resolution
+	// These come after mise.toml/.tool-versions so they have lower priority
+	configTools := imgCfg.ResolveToolDeps(agentName)
+	specs = append(specs, configTools...)
+
 	deduped := dedupeToolSpecs(specs)
 	deduped = ensureDefaultTool(deduped, spec)
-	deduped = ensureNodeTool(deduped)
 	infos := ensureToolInfo(idiomatic, spec)
-	infos = ensureNodeInfo(infos)
 	return collectResult{
 		specs:          deduped,
 		idiomaticPaths: uniquePaths(infos),
@@ -385,24 +366,6 @@ func ensureToolInfo(infos []idiomaticInfo, spec ToolSpec) []idiomaticInfo {
 		}
 	}
 	return append(infos, idiomaticInfo{tool: spec.MiseToolName, version: "latest", configKey: spec.ConfigKey})
-}
-
-func ensureNodeTool(specs []toolDescriptor) []toolDescriptor {
-	for _, spec := range specs {
-		if spec.name == "node" {
-			return specs
-		}
-	}
-	return append(specs, toolDescriptor{name: "node", version: "latest", labelName: "node"})
-}
-
-func ensureNodeInfo(infos []idiomaticInfo) []idiomaticInfo {
-	for _, info := range infos {
-		if info.configKey == "node" {
-			return infos
-		}
-	}
-	return append(infos, idiomaticInfo{tool: "node", version: "latest", configKey: "node"})
 }
 
 func collectionHasNode(toolFile, miseFile *fileSpec, collection collectResult) bool {

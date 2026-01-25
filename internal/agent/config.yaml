@@ -1,0 +1,65 @@
+tools:
+  node:
+    version: latest
+    depends: python # Needed for native modules and node-gyp
+  python:
+    version: latest
+
+agents:
+  codex:
+    packageName: npm:@openai/codex
+    command: codex --dangerously-bypass-approvals-and-sandbox
+    configDir: .codex
+    depends:
+      - node
+  opencode:
+    packageName: npm:opencode-ai
+    command: opencode
+    configDir: .config/opencode/
+    additionalMounts:
+      - .local/share/opencode
+    depends:
+      - node
+  copilot:
+    packageName: npm:@github/copilot
+    command: copilot --allow-all-tools --allow-all-paths --allow-all-urls
+    configDir: .copilot
+    envVars:
+      - GH_TOKEN="$(gh auth token -h github.com)"
+    depends:
+      - node
+  claude:
+    packageName: npm:@anthropic-ai/claude-code
+    command: claude --dangerously-skip-permissions
+    configDir: .claude
+    additionalMounts:
+      - .claude.json
+    envVars:
+      - ANTHROPIC_API_KEY
+    depends:
+      - node
+  gemini:
+    packageName: npm:@google/gemini-cli
+    command: gemini --yolo
+    configDir: .gemini
+    depends:
+      - node
+
+image:
+  base: debian:12-slim
+  packages:
+    - curl
+    - ca-certificates
+    - git
+    - gnupg
+    - apt-transport-https
+    - libatomic1 # Needed for node
+
+mise:
+  install:
+    - install -dm 755 /etc/apt/keyrings
+    - curl -fSs https://mise.jdx.dev/gpg-key.pub | tee /etc/apt/keyrings/mise-archive-keyring.pub >/dev/null
+    - arch=$(dpkg --print-architecture)
+    - echo "deb [signed-by=/etc/apt/keyrings/mise-archive-keyring.pub arch=$arch] https://mise.jdx.dev/deb stable main" | tee /etc/apt/sources.list.d/mise.list
+    - apt-get update
+    - apt-get install -y mise
