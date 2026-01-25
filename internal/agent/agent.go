@@ -157,7 +157,9 @@ func Run(cfg Config) error {
 	configMount := filepath.Join(home, spec.ConfigDir)
 	containerConfigPath := filepath.Join("/home/agent", spec.ConfigDir)
 
-	envs := []string{}
+	envs := []string{
+		"-e MISE_ENV=agent",
+	}
 	for _, env := range spec.EnvVars {
 		envs = append(envs, fmt.Sprintf("-e %s", env))
 	}
@@ -289,7 +291,13 @@ func buildDockerfile(hasTool, hasMise bool, collection collectResult, spec ToolS
 	b.WriteString("RUN chmod +x /usr/local/bin/agent-entrypoint\n")
 
 	b.WriteString("USER agent\n")
-	b.WriteString("RUN mise trust\n")
+
+	// Trust mise config files
+	if hasMise {
+		b.WriteString("RUN mise trust && mise trust /home/agent/.config/mise/mise.agent.toml\n")
+	} else {
+		b.WriteString("RUN mise trust /home/agent/.config/mise/mise.agent.toml\n")
+	}
 
 	// Run mise install for user config (if present) and agent config
 	if hasMise {

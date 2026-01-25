@@ -17,7 +17,7 @@ RUN chown agent:agent /home/agent/.config/mise/mise.agent.toml
 COPY assets/agent-entrypoint.sh /usr/local/bin/agent-entrypoint
 RUN chmod +x /usr/local/bin/agent-entrypoint
 USER agent
-RUN mise trust
+RUN mise trust /home/agent/.config/mise/mise.agent.toml
 RUN mise install --env agent
 RUN printf 'export PATH="/home/agent/.local/share/mise/shims:/home/agent/.local/bin:$PATH"\n' > /home/agent/.bashrc
 RUN printf 'source ~/.bashrc\n' > /home/agent/.bash_profile
