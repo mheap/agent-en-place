@@ -30,15 +30,15 @@ func main() {
 	args := flag.Args()
 	if len(args) != 1 {
 		fmt.Fprintf(os.Stderr, "usage: %s <tool>\n\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "tool must be one of: codex, opencode, copilot, gemini\n")
+		fmt.Fprintf(os.Stderr, "tool must be one of: claude, codex, opencode, copilot, gemini\n")
 		os.Exit(1)
 	}
 
 	tool := strings.ToLower(args[0])
-	validTools := map[string]bool{"codex": true, "opencode": true, "copilot": true, "gemini": true}
+	validTools := map[string]bool{"claude": true, "codex": true, "opencode": true, "copilot": true, "gemini": true}
 	if !validTools[tool] {
 		fmt.Fprintf(os.Stderr, "error: invalid tool '%s'\n", args[0])
-		fmt.Fprintf(os.Stderr, "tool must be one of: codex, opencode, copilot, gemini\n")
+		fmt.Fprintf(os.Stderr, "tool must be one of: claude, codex, opencode, copilot, gemini\n")
 		os.Exit(1)
 	}
 

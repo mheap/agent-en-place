@@ -58,6 +58,14 @@ var toolSpecs = map[string]ToolSpec{
 		ConfigDir:    ".copilot",
 		EnvVars:      []string{"GH_TOKEN=\"$(gh auth token -h github.com)\""},
 	},
+	"claude": {
+		MiseToolName:     "npm:@anthropic-ai/claude-code",
+		ConfigKey:        "npm:@anthropic-ai/claude-code",
+		Command:          "claude --dangerously-skip-permissions",
+		ConfigDir:        ".claude",
+		AdditionalMounts: []string{".claude.json"},
+		EnvVars:          []string{"ANTHROPIC_API_KEY"},
+	},
 	"gemini": {
 		MiseToolName: "npm:@google/gemini-cli",
 		ConfigKey:    "npm:@google/gemini-cli",
