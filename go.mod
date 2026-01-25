@@ -2,7 +2,10 @@ module github.com/mheap/agent-en-place
 
 go 1.24.4
 
-require github.com/moby/moby/client v0.2.1
+require (
+	github.com/moby/moby/client v0.2.1
+	gopkg.in/yaml.v3 v3.0.1
+)
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
