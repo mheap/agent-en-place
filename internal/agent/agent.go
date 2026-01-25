@@ -198,9 +198,11 @@ func buildDockerfile(hasTool, hasMise, needLibatomic bool, collection collectRes
 	b.WriteString(strings.Join(packages, " "))
 	b.WriteString("\n")
 
-	// Use configured mise installation commands
-	for _, cmd := range imgCfg.Mise.Install {
-		b.WriteString(fmt.Sprintf("RUN %s\n", cmd))
+	// Use configured mise installation commands (joined with && in a single RUN)
+	if len(imgCfg.Mise.Install) > 0 {
+		b.WriteString("RUN ")
+		b.WriteString(strings.Join(imgCfg.Mise.Install, " && "))
+		b.WriteString("\n")
 	}
 
 	b.WriteString("RUN rm -rf /var/lib/apt/lists/*\n\n")
