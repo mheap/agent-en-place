@@ -79,7 +79,7 @@ agents:
 
 ### Tool Version Detection
 
-`agent-en-place` also automatically detects tool versions from project configuration files:
+`agent-en-place` automatically detects tool versions from project configuration files:
 
 **`.tool-versions`** (asdf/mise format)
 
@@ -96,6 +96,13 @@ ruby 3.3.0
 node = "20.11.0"
 python = "3.12.0"
 ```
+
+When you provide a `mise.toml`, agent-en-place will:
+1. Copy your `mise.toml` unchanged into the container
+2. Generate a separate `mise.agent.toml` with agent requirements (excluding tools you've already defined)
+3. Run both `mise install` (for your tools) and `mise install --env agent` (for agent tools)
+
+This means **your tool versions always take precedence** over agent defaults. If you specify `node = "20.11.0"` in your `mise.toml`, that version will be used instead of the agent's default `latest`.
 
 **Idiomatic version files** are also recognized:
 
@@ -161,16 +168,20 @@ Currently supported providers:
 
 1. **Configuration Detection**: Scans current directory for `.tool-versions`, `mise.toml`, and idiomatic version files
 2. **Version Parsing**: Extracts tool names and versions from configuration files
-3. **Dockerfile Generation**: Creates a Debian 12-slim based Dockerfile with:
+3. **Mise Config Generation**: 
+   - If you have a `mise.toml`: copies it unchanged and generates `mise.agent.toml` with only the tools you haven't specified
+   - If no `mise.toml`: generates `mise.agent.toml` with all required agent tools
+4. **Dockerfile Generation**: Creates a Debian 12-slim based Dockerfile with:
    - mise runtime manager
    - All detected development tools at specified versions
    - Non-root user (UID 1000) for security
-4. **Image Building**: Builds Docker image (or reuses cached image if unchanged)
+5. **Image Building**: Builds Docker image (or reuses cached image if unchanged)
    - Image naming: `mheap/agent-en-place:<tool1>-<version1>-<tool2>-<version2>-...`
-5. **Container Execution**: Outputs `docker run` command with:
+6. **Container Execution**: Outputs `docker run` command with:
    - Current directory mounted to `/workdir`
    - Provider config directory mounted (e.g., `~/.copilot`)
    - Appropriate environment variables set
+   - `MISE_ENV=agent` to activate the agent environment
 
 ## Advanced Usage
 
@@ -199,6 +210,28 @@ Print the generated Dockerfile and exit without building. Useful for debugging o
 ```bash
 agent-en-place --dockerfile codex
 ```
+
+**`--mise-file`**
+
+Print the generated mise configuration files and exit without building. Shows both your `mise.toml` (if present) and the generated `mise.agent.toml`.
+
+```bash
+agent-en-place --mise-file claude
+```
+
+Example output:
+```
+# mise.toml (user)
+[tools]
+node = "20.11.0"
+
+# mise.agent.toml (generated)
+[tools]
+"npm:@anthropic-ai/claude-code" = "latest"
+python = "latest"
+```
+
+Note that `node` is not in the generated `mise.agent.toml` because you specified it in your `mise.toml`.
 
 **`--config`**
 
