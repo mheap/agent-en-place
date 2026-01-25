@@ -87,6 +87,7 @@ The tool also recognizes language-specific version files:
 | `.crystal-version` | Crystal  | `1.10.0`       |
 | `.exenv-version`   | Elixir   | `1.15.0`       |
 | `.yvmrc`           | Yarn     | `1.22.19`      |
+| `.bun-version`     | Bun      | `1.0.0`        |
 
 **Note**: Node.js is automatically included if not specified, as it's required by all supported AI coding tools.
 
