@@ -74,6 +74,26 @@ var toolSpecs = map[string]ToolSpec{
 	},
 }
 
+// miseToolToLabelName maps mise tool names to friendly label names
+var miseToolToLabelName = buildMiseToolToLabelName()
+
+func buildMiseToolToLabelName() map[string]string {
+	m := make(map[string]string)
+	for name, spec := range toolSpecs {
+		m[spec.MiseToolName] = name
+		m[sanitizeTagComponent(spec.MiseToolName)] = name
+	}
+	return m
+}
+
+// getLabelName returns a friendly label name for a tool
+func getLabelName(toolName string) string {
+	if label, ok := miseToolToLabelName[toolName]; ok {
+		return label
+	}
+	return toolName
+}
+
 func Run(cfg Config) error {
 	spec := toolSpecs[cfg.Tool]
 
@@ -279,8 +299,9 @@ func optionalFileSpec(path string) (*fileSpec, error) {
 }
 
 type toolDescriptor struct {
-	name    string
-	version string
+	name      string
+	version   string
+	labelName string // friendly name for Docker labels (e.g., "codex" instead of "npm-openai-codex")
 }
 
 type collectResult struct {
@@ -334,18 +355,27 @@ func dedupeToolSpecs(specs []toolDescriptor) []toolDescriptor {
 		if version == "" {
 			version = "latest"
 		}
-		result = append(result, toolDescriptor{name: key, version: version})
+		labelName := spec.labelName
+		if labelName == "" {
+			labelName = getLabelName(spec.name)
+		}
+		result = append(result, toolDescriptor{name: key, version: version, labelName: labelName})
 	}
 	return result
 }
 
 func ensureDefaultTool(specs []toolDescriptor, toolSpec ToolSpec) []toolDescriptor {
+	sanitizedName := sanitizeTagComponent(toolSpec.MiseToolName)
 	for _, spec := range specs {
-		if spec.name == toolSpec.MiseToolName {
+		if spec.name == sanitizedName {
 			return specs
 		}
 	}
-	return append(specs, toolDescriptor{name: toolSpec.MiseToolName, version: "latest"})
+	return append(specs, toolDescriptor{
+		name:      toolSpec.MiseToolName,
+		version:   "latest",
+		labelName: getLabelName(toolSpec.MiseToolName),
+	})
 }
 
 func ensureToolInfo(infos []idiomaticInfo, spec ToolSpec) []idiomaticInfo {
@@ -363,7 +393,7 @@ func ensureNodeTool(specs []toolDescriptor) []toolDescriptor {
 			return specs
 		}
 	}
-	return append(specs, toolDescriptor{name: "node", version: "latest"})
+	return append(specs, toolDescriptor{name: "node", version: "latest", labelName: "node"})
 }
 
 func ensureNodeInfo(infos []idiomaticInfo) []idiomaticInfo {
@@ -598,7 +628,10 @@ func buildImageName(specs []toolDescriptor) string {
 func buildToolLabels(specs []toolDescriptor) string {
 	var b strings.Builder
 	for _, spec := range specs {
-		name := sanitizeTagComponent(spec.name)
+		name := spec.labelName
+		if name == "" {
+			name = sanitizeTagComponent(spec.name)
+		}
 		if name == "" {
 			continue
 		}

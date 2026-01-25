@@ -12,7 +12,7 @@ ENV HOME=/home/agent
 ENV PATH="/home/agent/.local/share/mise/shims:/home/agent/.local/bin:${PATH}"
 
 RUN mkdir -p /home/agent/.config/mise
-LABEL com.mheap.agent-en-place.npm-github-copilot="latest"
+LABEL com.mheap.agent-en-place.copilot="latest"
 LABEL com.mheap.agent-en-place.node="latest"
 WORKDIR /home/agent
 RUN printf '%s\n' \

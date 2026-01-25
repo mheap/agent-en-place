@@ -13,7 +13,7 @@ ENV PATH="/home/agent/.local/share/mise/shims:/home/agent/.local/bin:${PATH}"
 
 RUN mkdir -p /home/agent/.config/mise
 LABEL com.mheap.agent-en-place.node="18.19.0"
-LABEL com.mheap.agent-en-place.npm-anthropic-ai-claude-code="latest"
+LABEL com.mheap.agent-en-place.claude="latest"
 WORKDIR /home/agent
 RUN printf '%s\n' \
   '[tools]' \
