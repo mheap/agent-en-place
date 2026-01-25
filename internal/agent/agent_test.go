@@ -92,8 +92,8 @@ func TestDockerfile_Basic(t *testing.T) {
 			spec := getToolSpec(t, imgCfg, tt.tool)
 			collection := buildDefaultCollection(tt.tool, spec)
 
-			// Basic case: no .tool-versions
-			got := buildDockerfile(false, collection, spec, imgCfg, tt.tool)
+			// Basic case: no .tool-versions, no mise.toml
+			got := buildDockerfile(false, false, collection, spec, imgCfg, tt.tool)
 
 			goldenTest(t, "dockerfile_"+tt.name+"_basic.golden", got)
 		})
@@ -116,8 +116,8 @@ func TestDockerfile_Claude_WithToolVersions(t *testing.T) {
 		},
 	}
 
-	// hasTool=true
-	got := buildDockerfile(true, collection, spec, imgCfg, "claude")
+	// hasTool=true, hasMise=false
+	got := buildDockerfile(true, false, collection, spec, imgCfg, "claude")
 
 	goldenTest(t, "dockerfile_claude_with_tool_versions.golden", got)
 }
@@ -140,8 +140,8 @@ func TestDockerfile_Claude_WithMiseToml(t *testing.T) {
 		},
 	}
 
-	// hasTool=false (mise.toml is always generated now)
-	got := buildDockerfile(false, collection, spec, imgCfg, "claude")
+	// hasTool=false, hasMise=true
+	got := buildDockerfile(false, true, collection, spec, imgCfg, "claude")
 
 	goldenTest(t, "dockerfile_claude_with_mise_toml.golden", got)
 }
@@ -162,8 +162,8 @@ func TestDockerfile_Claude_WithNodeVersion(t *testing.T) {
 		},
 	}
 
-	// hasTool=false
-	got := buildDockerfile(false, collection, spec, imgCfg, "claude")
+	// hasTool=false, hasMise=false (node version comes from .node-version file)
+	got := buildDockerfile(false, false, collection, spec, imgCfg, "claude")
 
 	goldenTest(t, "dockerfile_claude_with_node_version.golden", got)
 }
@@ -186,8 +186,8 @@ func TestDockerfile_Claude_WithBothConfigs(t *testing.T) {
 		},
 	}
 
-	// hasTool=true
-	got := buildDockerfile(true, collection, spec, imgCfg, "claude")
+	// hasTool=true, hasMise=true
+	got := buildDockerfile(true, true, collection, spec, imgCfg, "claude")
 
 	goldenTest(t, "dockerfile_claude_with_both_configs.golden", got)
 }
@@ -208,8 +208,8 @@ func TestDockerfile_Claude_WithoutNode(t *testing.T) {
 		},
 	}
 
-	// hasTool=false
-	got := buildDockerfile(false, collection, spec, imgCfg, "claude")
+	// hasTool=false, hasMise=false
+	got := buildDockerfile(false, false, collection, spec, imgCfg, "claude")
 
 	goldenTest(t, "dockerfile_claude_without_node.golden", got)
 }
@@ -297,7 +297,7 @@ func TestHandleBuildOutput_FiltersWhitespace(t *testing.T) {
 	}
 }
 
-func TestBuildMiseConfig_NoUserFile(t *testing.T) {
+func TestBuildAgentMiseConfig_NoUserFile(t *testing.T) {
 	spec := ToolSpec{
 		MiseToolName: "npm:@anthropic-ai/claude-code",
 		ConfigKey:    "npm:@anthropic-ai/claude-code",
@@ -309,7 +309,7 @@ func TestBuildMiseConfig_NoUserFile(t *testing.T) {
 		},
 	}
 
-	data, err := buildMiseConfig(nil, collection, spec)
+	data, err := buildAgentMiseConfig(nil, collection, spec)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -332,13 +332,13 @@ func TestBuildMiseConfig_NoUserFile(t *testing.T) {
 	}
 }
 
-func TestBuildMiseConfig_WithUserFile(t *testing.T) {
+func TestBuildAgentMiseConfig_WithUserFile(t *testing.T) {
 	spec := ToolSpec{
 		MiseToolName: "npm:@anthropic-ai/claude-code",
 		ConfigKey:    "npm:@anthropic-ai/claude-code",
 	}
 
-	// User's mise.toml with python
+	// User's mise.toml with python (this should NOT affect agent config since it's a different tool)
 	userMise := []byte(`[tools]
 python = "3.12.0"
 `)
@@ -349,19 +349,19 @@ python = "3.12.0"
 		},
 	}
 
-	data, err := buildMiseConfig(userMise, collection, spec)
+	data, err := buildAgentMiseConfig(userMise, collection, spec)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	result := string(data)
 
-	// Should contain user's python
-	if !strings.Contains(result, "python") || !strings.Contains(result, "3.12.0") {
-		t.Errorf("expected python = 3.12.0, got: %s", result)
+	// Should NOT contain user's python (agent config only has tools NOT in user's config)
+	if strings.Contains(result, "python") {
+		t.Errorf("expected python to NOT be in agent config (it's in user's mise.toml), got: %s", result)
 	}
 
-	// Should contain node from collection
+	// Should contain node from collection (user didn't specify node)
 	if !strings.Contains(result, "node") || !strings.Contains(result, "20.0.0") {
 		t.Errorf("expected node = 20.0.0, got: %s", result)
 	}
@@ -372,49 +372,49 @@ python = "3.12.0"
 	}
 }
 
-func TestBuildMiseConfig_UserVersionPrecedence(t *testing.T) {
+func TestBuildAgentMiseConfig_FiltersUserTools(t *testing.T) {
 	spec := ToolSpec{
 		MiseToolName: "npm:@anthropic-ai/claude-code",
 		ConfigKey:    "npm:@anthropic-ai/claude-code",
 	}
 
-	// User specifies node 18.0.0
+	// User specifies node - this should be filtered OUT of agent config
 	userMise := []byte(`[tools]
 node = "18.0.0"
 `)
 
-	// Collection has node 20.0.0
+	// Collection has node 20.0.0 (would normally be added)
 	collection := collectResult{
 		idiomaticInfos: []idiomaticInfo{
 			{tool: "node", version: "20.0.0", configKey: "node"},
 		},
 	}
 
-	data, err := buildMiseConfig(userMise, collection, spec)
+	data, err := buildAgentMiseConfig(userMise, collection, spec)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	result := string(data)
 
-	// User's version should take precedence
-	if !strings.Contains(result, "18.0.0") {
-		t.Errorf("expected user's node version 18.0.0, got: %s", result)
+	// Node should NOT be in agent config because user specified it
+	if strings.Contains(result, "node") {
+		t.Errorf("expected node to be filtered out (user specified it), got: %s", result)
 	}
 
-	// Collection's version should NOT be present
-	if strings.Contains(result, "20.0.0") {
-		t.Errorf("expected user version to take precedence, but found 20.0.0 in: %s", result)
+	// Agent tool should still be present
+	if !strings.Contains(result, "npm:@anthropic-ai/claude-code") {
+		t.Errorf("expected agent tool, got: %s", result)
 	}
 }
 
-func TestBuildMiseConfig_PreservesOtherSections(t *testing.T) {
+func TestBuildAgentMiseConfig_OnlyToolsSection(t *testing.T) {
 	spec := ToolSpec{
 		MiseToolName: "npm:@anthropic-ai/claude-code",
 		ConfigKey:    "npm:@anthropic-ai/claude-code",
 	}
 
-	// User's mise.toml with additional sections
+	// User's mise.toml with additional sections (these should NOT appear in agent config)
 	userMise := []byte(`[tools]
 python = "3.12.0"
 
@@ -429,21 +429,27 @@ MY_VAR = "hello"
 		idiomaticInfos: []idiomaticInfo{},
 	}
 
-	data, err := buildMiseConfig(userMise, collection, spec)
+	data, err := buildAgentMiseConfig(userMise, collection, spec)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	result := string(data)
 
-	// Should preserve [settings] section
-	if !strings.Contains(result, "[settings]") || !strings.Contains(result, "experimental") {
-		t.Errorf("expected [settings] section to be preserved, got: %s", result)
+	// Should only contain [tools] section - no [settings] or [env]
+	if strings.Contains(result, "[settings]") {
+		t.Errorf("expected NO [settings] section in agent config, got: %s", result)
+	}
+	if strings.Contains(result, "[env]") {
+		t.Errorf("expected NO [env] section in agent config, got: %s", result)
 	}
 
-	// Should preserve [env] section
-	if !strings.Contains(result, "[env]") || !strings.Contains(result, "MY_VAR") {
-		t.Errorf("expected [env] section to be preserved, got: %s", result)
+	// Should contain agent's primary tool
+	if !strings.Contains(result, "[tools]") {
+		t.Errorf("expected [tools] section, got: %s", result)
+	}
+	if !strings.Contains(result, "npm:@anthropic-ai/claude-code") {
+		t.Errorf("expected agent tool, got: %s", result)
 	}
 }
 
@@ -488,8 +494,8 @@ func TestParseMiseToml_NilSpec(t *testing.T) {
 	}
 }
 
-// TestBuildMiseConfig_AllAgents tests mise.toml generation for each agent in config.yaml
-func TestBuildMiseConfig_AllAgents(t *testing.T) {
+// TestBuildAgentMiseConfig_AllAgents tests mise.agent.toml generation for each agent in config.yaml
+func TestBuildAgentMiseConfig_AllAgents(t *testing.T) {
 	imgCfg := loadTestConfig(t)
 
 	tests := []struct {
@@ -539,8 +545,8 @@ func TestBuildMiseConfig_AllAgents(t *testing.T) {
 				idiomaticInfos: idiomaticInfos,
 			}
 
-			// Build mise.toml without user file
-			data, err := buildMiseConfig(nil, collection, spec)
+			// Build mise.agent.toml without user file
+			data, err := buildAgentMiseConfig(nil, collection, spec)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -569,11 +575,11 @@ func TestBuildMiseConfig_AllAgents(t *testing.T) {
 	}
 }
 
-// TestBuildMiseConfig_AllAgents_WithUserMise tests that user mise.toml is correctly merged for each agent
-func TestBuildMiseConfig_AllAgents_WithUserMise(t *testing.T) {
+// TestBuildAgentMiseConfig_AllAgents_WithUserMise tests that user tools are filtered out from agent config
+func TestBuildAgentMiseConfig_AllAgents_WithUserMise(t *testing.T) {
 	imgCfg := loadTestConfig(t)
 
-	// User mise.toml with custom tools
+	// User mise.toml with custom tools (ruby and go are NOT agent dependencies, so they don't affect filtering)
 	userMise := []byte(`[tools]
 ruby = "3.2.0"
 go = "1.21.0"
@@ -601,43 +607,43 @@ go = "1.21.0"
 				idiomaticInfos: idiomaticInfos,
 			}
 
-			// Build mise.toml with user file
-			data, err := buildMiseConfig(userMise, collection, spec)
+			// Build mise.agent.toml with user file
+			data, err := buildAgentMiseConfig(userMise, collection, spec)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
 			result := string(data)
 
-			// User tools should be preserved
-			if !strings.Contains(result, "ruby") || !strings.Contains(result, "3.2.0") {
-				t.Errorf("expected user's ruby tool to be preserved, got:\n%s", result)
+			// User tools (ruby, go) should NOT be in agent config - they're not agent dependencies
+			if strings.Contains(result, "ruby") {
+				t.Errorf("expected user's ruby tool to NOT be in agent config, got:\n%s", result)
 			}
-			if !strings.Contains(result, "go") || !strings.Contains(result, "1.21.0") {
-				t.Errorf("expected user's go tool to be preserved, got:\n%s", result)
+			if strings.Contains(result, "go =") {
+				t.Errorf("expected user's go tool to NOT be in agent config, got:\n%s", result)
 			}
 
-			// Agent's primary tool should be added
+			// Agent's primary tool should be present
 			if !strings.Contains(result, spec.ConfigKey) {
-				t.Errorf("expected agent tool %q to be added, got:\n%s", spec.ConfigKey, result)
+				t.Errorf("expected agent tool %q to be present, got:\n%s", spec.ConfigKey, result)
 			}
 
-			// Dependencies should be added
+			// Dependencies should be present (user didn't specify them)
 			if !strings.Contains(result, "node") {
-				t.Errorf("expected node dependency to be added, got:\n%s", result)
+				t.Errorf("expected node dependency to be present, got:\n%s", result)
 			}
 			if !strings.Contains(result, "python") {
-				t.Errorf("expected python dependency to be added, got:\n%s", result)
+				t.Errorf("expected python dependency to be present, got:\n%s", result)
 			}
 		})
 	}
 }
 
-// TestBuildMiseConfig_AllAgents_UserOverridesDefaults tests that user versions override agent defaults
-func TestBuildMiseConfig_AllAgents_UserOverridesDefaults(t *testing.T) {
+// TestBuildAgentMiseConfig_AllAgents_UserOverridesDefaults tests that user-specified tools are filtered out
+func TestBuildAgentMiseConfig_AllAgents_UserOverridesDefaults(t *testing.T) {
 	imgCfg := loadTestConfig(t)
 
-	// User mise.toml with custom node version (should override the default "latest")
+	// User mise.toml specifies node and python - these should be filtered OUT of agent config
 	userMise := []byte(`[tools]
 node = "18.19.0"
 python = "3.11.0"
@@ -665,40 +671,32 @@ python = "3.11.0"
 				idiomaticInfos: idiomaticInfos,
 			}
 
-			// Build mise.toml with user file
-			data, err := buildMiseConfig(userMise, collection, spec)
+			// Build mise.agent.toml with user file
+			data, err := buildAgentMiseConfig(userMise, collection, spec)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
 			result := string(data)
 
-			// User's node version should take precedence
-			if !strings.Contains(result, "18.19.0") {
-				t.Errorf("expected user's node version 18.19.0, got:\n%s", result)
+			// node and python should NOT be in agent config (user specified them)
+			if strings.Contains(result, "node") {
+				t.Errorf("expected node to be filtered out (user specified it), got:\n%s", result)
+			}
+			if strings.Contains(result, "python") {
+				t.Errorf("expected python to be filtered out (user specified it), got:\n%s", result)
 			}
 
-			// User's python version should take precedence
-			if !strings.Contains(result, "3.11.0") {
-				t.Errorf("expected user's python version 3.11.0, got:\n%s", result)
-			}
-
-			// Default "latest" version for node/python should NOT appear as a separate entry
-			// (The agent tool itself may still have "latest")
-			nodeLatestCount := strings.Count(result, `node = "latest"`)
-			pythonLatestCount := strings.Count(result, `python = "latest"`)
-			if nodeLatestCount > 0 {
-				t.Errorf("expected user node version to override default, but found 'node = \"latest\"' in:\n%s", result)
-			}
-			if pythonLatestCount > 0 {
-				t.Errorf("expected user python version to override default, but found 'python = \"latest\"' in:\n%s", result)
+			// Agent tool should still be present
+			if !strings.Contains(result, spec.ConfigKey) {
+				t.Errorf("expected agent tool %q to be present, got:\n%s", spec.ConfigKey, result)
 			}
 		})
 	}
 }
 
-// TestBuildMiseConfig_GoldenFiles tests mise.toml generation against golden files for each agent
-func TestBuildMiseConfig_GoldenFiles(t *testing.T) {
+// TestBuildAgentMiseConfig_GoldenFiles tests mise.agent.toml generation against golden files for each agent
+func TestBuildAgentMiseConfig_GoldenFiles(t *testing.T) {
 	imgCfg := loadTestConfig(t)
 
 	agents := []string{"codex", "opencode", "copilot", "claude", "gemini"}
@@ -723,13 +721,13 @@ func TestBuildMiseConfig_GoldenFiles(t *testing.T) {
 				idiomaticInfos: idiomaticInfos,
 			}
 
-			// Build mise.toml without user file
-			data, err := buildMiseConfig(nil, collection, spec)
+			// Build mise.agent.toml without user file
+			data, err := buildAgentMiseConfig(nil, collection, spec)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
-			goldenTest(t, "mise_"+agentName+".golden", string(data))
+			goldenTest(t, "mise_agent_"+agentName+".golden", string(data))
 		})
 	}
 }

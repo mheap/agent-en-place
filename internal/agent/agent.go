@@ -31,6 +31,7 @@ type Config struct {
 	Debug          bool
 	Rebuild        bool
 	DockerfileOnly bool
+	MiseFileOnly   bool
 	Tool           string
 	ConfigPath     string
 }
@@ -88,7 +89,28 @@ func Run(cfg Config) error {
 
 	collection := collectToolSpecs(toolFile, miseFile, spec, imgCfg, cfg.Tool)
 	if cfg.DockerfileOnly {
-		fmt.Print(buildDockerfile(toolFile != nil, collection, spec, imgCfg, cfg.Tool))
+		fmt.Print(buildDockerfile(toolFile != nil, miseFile != nil, collection, spec, imgCfg, cfg.Tool))
+		return nil
+	}
+	if cfg.MiseFileOnly {
+		var userMiseData []byte
+		if miseFile != nil {
+			userMiseData = miseFile.data
+		}
+		agentMiseData, err := buildAgentMiseConfig(userMiseData, collection, spec)
+		if err != nil {
+			return fmt.Errorf("failed to build mise.agent.toml: %w", err)
+		}
+
+		// Output user's mise.toml if present
+		if miseFile != nil {
+			fmt.Println("# mise.toml (user)")
+			fmt.Println(string(miseFile.data))
+		}
+
+		// Output agent's mise.agent.toml
+		fmt.Println("# mise.agent.toml (generated)")
+		fmt.Print(string(agentMiseData))
 		return nil
 	}
 	imageName := buildImageName(collection.specs)
@@ -135,7 +157,9 @@ func Run(cfg Config) error {
 	configMount := filepath.Join(home, spec.ConfigDir)
 	containerConfigPath := filepath.Join("/home/agent", spec.ConfigDir)
 
-	envs := []string{}
+	envs := []string{
+		"-e MISE_ENV=agent",
+	}
 	for _, env := range spec.EnvVars {
 		envs = append(envs, fmt.Sprintf("-e %s", env))
 	}
@@ -157,7 +181,7 @@ func Run(cfg Config) error {
 
 func makeBuildContext(toolFile, miseFile *fileSpec, collection collectResult, spec ToolSpec, imgCfg *ImageConfig, agentName string) (io.Reader, error) {
 
-	dockerfile := buildDockerfile(toolFile != nil, collection, spec, imgCfg, agentName)
+	dockerfile := buildDockerfile(toolFile != nil, miseFile != nil, collection, spec, imgCfg, agentName)
 
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
@@ -172,16 +196,25 @@ func makeBuildContext(toolFile, miseFile *fileSpec, collection collectResult, sp
 		}
 	}
 
-	// Always build mise.toml with merged tools (user's + required)
+	// Build mise.agent.toml with agent tools (excluding any user-defined tools)
 	var userMiseData []byte
 	if miseFile != nil {
 		userMiseData = miseFile.data
 	}
-	miseData, err := buildMiseConfig(userMiseData, collection, spec)
+	agentMiseData, err := buildAgentMiseConfig(userMiseData, collection, spec)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build mise.toml: %w", err)
+		return nil, fmt.Errorf("failed to build mise.agent.toml: %w", err)
 	}
-	if err := writeFileToTar(tw, "mise.toml", miseData, 0644); err != nil {
+
+	// Add user's mise.toml if present (unchanged)
+	if miseFile != nil {
+		if err := writeFileToTar(tw, "mise.toml", miseFile.data, 0644); err != nil {
+			return nil, err
+		}
+	}
+
+	// Always add mise.agent.toml with agent requirements
+	if err := writeFileToTar(tw, "mise.agent.toml", agentMiseData, 0644); err != nil {
 		return nil, err
 	}
 
@@ -199,7 +232,7 @@ func makeBuildContext(toolFile, miseFile *fileSpec, collection collectResult, sp
 	return bytes.NewReader(buf.Bytes()), nil
 }
 
-func buildDockerfile(hasTool bool, collection collectResult, spec ToolSpec, imgCfg *ImageConfig, agentName string) string {
+func buildDockerfile(hasTool, hasMise bool, collection collectResult, spec ToolSpec, imgCfg *ImageConfig, agentName string) string {
 	var b strings.Builder
 
 	// Use configured base image
@@ -236,20 +269,43 @@ func buildDockerfile(hasTool bool, collection collectResult, spec ToolSpec, imgC
 	if hasTool {
 		b.WriteString("COPY .tool-versions .tool-versions\n")
 	}
-	// mise.toml is always generated with merged tools
-	b.WriteString("COPY mise.toml /home/agent/.config/mise/config.toml\n")
+
+	// Copy user's mise.toml if present
+	if hasMise {
+		b.WriteString("COPY mise.toml /home/agent/.config/mise/config.toml\n")
+	}
+	// Always copy mise.agent.toml with agent requirements
+	b.WriteString("COPY mise.agent.toml /home/agent/.config/mise/mise.agent.toml\n")
+
+	// Set ownership
 	b.WriteString("RUN chown agent:agent")
 	if hasTool {
 		b.WriteString(" .tool-versions")
 	}
-	b.WriteString(" /home/agent/.config/mise/config.toml\n")
+	if hasMise {
+		b.WriteString(" /home/agent/.config/mise/config.toml")
+	}
+	b.WriteString(" /home/agent/.config/mise/mise.agent.toml\n")
 
 	b.WriteString("COPY assets/agent-entrypoint.sh /usr/local/bin/agent-entrypoint\n")
 	b.WriteString("RUN chmod +x /usr/local/bin/agent-entrypoint\n")
 
 	b.WriteString("USER agent\n")
-	b.WriteString("RUN mise trust\n")
-	b.WriteString("RUN mise install\n")
+
+	// Trust mise config files
+	if hasMise {
+		b.WriteString("RUN mise trust && mise trust /home/agent/.config/mise/mise.agent.toml\n")
+	} else {
+		b.WriteString("RUN mise trust /home/agent/.config/mise/mise.agent.toml\n")
+	}
+
+	// Run mise install for user config (if present) and agent config
+	if hasMise {
+		b.WriteString("RUN mise install && mise install --env agent\n")
+	} else {
+		b.WriteString("RUN mise install --env agent\n")
+	}
+
 	b.WriteString("RUN printf 'export PATH=\"/home/agent/.local/share/mise/shims:/home/agent/.local/bin:$PATH\"\\n' > /home/agent/.bashrc\n")
 	b.WriteString("RUN printf 'source ~/.bashrc\\n' > /home/agent/.bash_profile\n")
 	b.WriteString("WORKDIR /workdir\n")
@@ -321,10 +377,21 @@ func collectToolSpecs(toolFile, miseFile *fileSpec, spec ToolSpec, imgCfg *Image
 
 	deduped := dedupeToolSpecs(specs)
 	deduped = ensureDefaultTool(deduped, spec)
-	infos := ensureToolInfo(idiomatic, spec)
+
+	// Build idiomaticInfos: start with idiomatic files, then add config tool dependencies
+	infos := append([]idiomaticInfo{}, idiomatic...)
+	for _, dep := range configTools {
+		infos = append(infos, idiomaticInfo{
+			tool:      dep.name,
+			version:   dep.version,
+			configKey: dep.name,
+		})
+	}
+	infos = ensureToolInfo(infos, spec)
+
 	return collectResult{
 		specs:          deduped,
-		idiomaticPaths: uniquePaths(infos),
+		idiomaticPaths: uniquePaths(idiomatic), // Only idiomatic files need to be copied
 		idiomaticInfos: infos,
 	}
 }
@@ -595,29 +662,28 @@ func buildToolLabels(specs []toolDescriptor) string {
 	return b.String()
 }
 
-// buildMiseConfig creates a mise.toml configuration with all required tools merged in.
-// If userMiseData is provided, it parses and merges into that config, preserving all sections.
-// User-specified tool versions take precedence over defaults.
-func buildMiseConfig(userMiseData []byte, collection collectResult, spec ToolSpec) ([]byte, error) {
-	// Start with user's config or empty map
-	config := make(map[string]any)
+// buildAgentMiseConfig creates a mise.agent.toml with only the [tools] section.
+// It excludes any tools that are already defined in the user's mise.toml,
+// allowing user-specified versions to take precedence via mise's environment layering.
+func buildAgentMiseConfig(userMiseData []byte, collection collectResult, spec ToolSpec) ([]byte, error) {
+	// Parse user's mise.toml to get their tool names (for filtering)
+	userTools := make(map[string]bool)
 	if len(userMiseData) > 0 {
-		if err := toml.Unmarshal(userMiseData, &config); err != nil {
+		var userConfig map[string]any
+		if err := toml.Unmarshal(userMiseData, &userConfig); err != nil {
 			return nil, fmt.Errorf("failed to parse mise.toml: %w", err)
+		}
+		if tools, ok := userConfig["tools"].(map[string]any); ok {
+			for name := range tools {
+				userTools[name] = true
+			}
 		}
 	}
 
-	// Get or create tools section
-	var tools map[string]any
-	if t, ok := config["tools"]; ok {
-		tools, _ = t.(map[string]any)
-	}
-	if tools == nil {
-		tools = make(map[string]any)
-	}
+	// Build agent tools map, excluding tools the user has defined
+	agentTools := make(map[string]any)
 
 	// Add tools from collection (idiomatic files, .tool-versions, etc.)
-	// Only add if not already specified by user (user versions take precedence)
 	for _, info := range collection.idiomaticInfos {
 		version := strings.TrimSpace(info.version)
 		if version == "" {
@@ -627,28 +693,26 @@ func buildMiseConfig(userMiseData []byte, collection collectResult, spec ToolSpe
 		if key == "" {
 			key = info.tool
 		}
-		if _, exists := tools[key]; !exists {
-			tools[key] = version
+		// Only add if user hasn't specified this tool
+		if !userTools[key] {
+			agentTools[key] = version
 		}
 	}
 
-	// Ensure the agent's primary tool is present
-	if _, exists := tools[spec.ConfigKey]; !exists {
-		tools[spec.ConfigKey] = "latest"
+	// Ensure the agent's primary tool is present (unless user specified it)
+	if !userTools[spec.ConfigKey] {
+		agentTools[spec.ConfigKey] = "latest"
 	}
 
-	config["tools"] = tools
-
-	// Marshal back to TOML with sorted keys for deterministic output
-	return marshalMiseConfig(config)
+	// Marshal to TOML (only [tools] section)
+	return marshalAgentMiseConfig(agentTools)
 }
 
-// marshalMiseConfig marshals the config to TOML with tools section first and sorted keys
-func marshalMiseConfig(config map[string]any) ([]byte, error) {
+// marshalAgentMiseConfig marshals the tools map to a TOML [tools] section with sorted keys
+func marshalAgentMiseConfig(tools map[string]any) ([]byte, error) {
 	var buf bytes.Buffer
 
-	// Write [tools] section first for readability
-	if tools, ok := config["tools"].(map[string]any); ok && len(tools) > 0 {
+	if len(tools) > 0 {
 		buf.WriteString("[tools]\n")
 
 		// Sort tool names for deterministic output
@@ -667,31 +731,6 @@ func marshalMiseConfig(config map[string]any) ([]byte, error) {
 			}
 			buf.WriteString(fmt.Sprintf("%s = %q\n", quotedName, version))
 		}
-	}
-
-	// Write other sections (preserving user's additional config)
-	otherKeys := make([]string, 0)
-	for key := range config {
-		if key != "tools" {
-			otherKeys = append(otherKeys, key)
-		}
-	}
-	sort.Strings(otherKeys)
-
-	for _, key := range otherKeys {
-		value := config[key]
-		// Add blank line before new sections
-		if buf.Len() > 0 {
-			buf.WriteString("\n")
-		}
-
-		// Marshal this section
-		sectionConfig := map[string]any{key: value}
-		sectionBytes, err := toml.Marshal(sectionConfig)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal section %s: %w", key, err)
-		}
-		buf.Write(sectionBytes)
 	}
 
 	return buf.Bytes(), nil
