@@ -10,11 +10,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	_ "embed"
 
 	"github.com/moby/moby/client"
+	"github.com/pelletier/go-toml/v2"
 )
 
 //go:embed assets/agent-entrypoint.sh
@@ -86,7 +88,7 @@ func Run(cfg Config) error {
 
 	collection := collectToolSpecs(toolFile, miseFile, spec, imgCfg, cfg.Tool)
 	if cfg.DockerfileOnly {
-		fmt.Print(buildDockerfile(toolFile != nil, miseFile != nil, collection, spec, imgCfg, cfg.Tool))
+		fmt.Print(buildDockerfile(toolFile != nil, collection, spec, imgCfg, cfg.Tool))
 		return nil
 	}
 	imageName := buildImageName(collection.specs)
@@ -155,7 +157,7 @@ func Run(cfg Config) error {
 
 func makeBuildContext(toolFile, miseFile *fileSpec, collection collectResult, spec ToolSpec, imgCfg *ImageConfig, agentName string) (io.Reader, error) {
 
-	dockerfile := buildDockerfile(toolFile != nil, miseFile != nil, collection, spec, imgCfg, agentName)
+	dockerfile := buildDockerfile(toolFile != nil, collection, spec, imgCfg, agentName)
 
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
@@ -169,11 +171,20 @@ func makeBuildContext(toolFile, miseFile *fileSpec, collection collectResult, sp
 			return nil, err
 		}
 	}
+
+	// Always build mise.toml with merged tools (user's + required)
+	var userMiseData []byte
 	if miseFile != nil {
-		if err := writeFileToTar(tw, miseFile.path, miseFile.data, miseFile.mode); err != nil {
-			return nil, err
-		}
+		userMiseData = miseFile.data
 	}
+	miseData, err := buildMiseConfig(userMiseData, collection, spec)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build mise.toml: %w", err)
+	}
+	if err := writeFileToTar(tw, "mise.toml", miseData, 0644); err != nil {
+		return nil, err
+	}
+
 	if err := writeIdiomaticFiles(tw, collection.idiomaticPaths); err != nil {
 		return nil, err
 	}
@@ -188,7 +199,7 @@ func makeBuildContext(toolFile, miseFile *fileSpec, collection collectResult, sp
 	return bytes.NewReader(buf.Bytes()), nil
 }
 
-func buildDockerfile(hasTool, hasMise bool, collection collectResult, spec ToolSpec, imgCfg *ImageConfig, agentName string) string {
+func buildDockerfile(hasTool bool, collection collectResult, spec ToolSpec, imgCfg *ImageConfig, agentName string) string {
 	var b strings.Builder
 
 	// Use configured base image
@@ -225,26 +236,13 @@ func buildDockerfile(hasTool, hasMise bool, collection collectResult, spec ToolS
 	if hasTool {
 		b.WriteString("COPY .tool-versions .tool-versions\n")
 	}
-	if hasMise {
-		b.WriteString("COPY mise.toml /home/agent/.config/mise/config.toml\n")
-	} else {
-		b.WriteString("RUN printf '%s\\n' \\\n")
-		for _, line := range defaultMiseLines(collection, spec) {
-			if line == "" {
-				b.WriteString("  '' \\\n")
-				continue
-			}
-			b.WriteString(fmt.Sprintf("  '%s' \\\n", escapeForPrintf(line)))
-		}
-		b.WriteString("  > /home/agent/.config/mise/config.toml\n")
+	// mise.toml is always generated with merged tools
+	b.WriteString("COPY mise.toml /home/agent/.config/mise/config.toml\n")
+	b.WriteString("RUN chown agent:agent")
+	if hasTool {
+		b.WriteString(" .tool-versions")
 	}
-	if hasTool || hasMise {
-		b.WriteString("RUN chown agent:agent")
-		if hasTool {
-			b.WriteString(" .tool-versions")
-		}
-		b.WriteString(" /home/agent/.config/mise/config.toml\n")
-	}
+	b.WriteString(" /home/agent/.config/mise/config.toml\n")
 
 	b.WriteString("COPY assets/agent-entrypoint.sh /usr/local/bin/agent-entrypoint\n")
 	b.WriteString("RUN chmod +x /usr/local/bin/agent-entrypoint\n")
@@ -437,41 +435,22 @@ func parseMiseToml(spec *fileSpec) []toolDescriptor {
 	if spec == nil {
 		return nil
 	}
+
+	var config map[string]any
+	if err := toml.Unmarshal(spec.data, &config); err != nil {
+		return nil // Fall back gracefully on parse error
+	}
+
+	// Extract tools from [tools] section
+	tools, ok := config["tools"].(map[string]any)
+	if !ok {
+		return nil
+	}
+
 	var specs []toolDescriptor
-	scanner := bufio.NewScanner(bytes.NewReader(spec.data))
-	insideTool := false
-	var current toolDescriptor
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if strings.HasPrefix(line, "[[tool") || strings.HasPrefix(line, "[tool") {
-			insideTool = true
-			current = toolDescriptor{}
-			continue
-		}
-		if strings.HasPrefix(line, "[") {
-			insideTool = false
-			continue
-		}
-		if !insideTool {
-			continue
-		}
-		if idx := strings.Index(line, "="); idx >= 0 {
-			key := strings.TrimSpace(line[:idx])
-			value := strings.TrimSpace(line[idx+1:])
-			value = strings.Trim(value, "\"'")
-			switch key {
-			case "name":
-				current.name = value
-			case "version":
-				current.version = value
-			}
-		}
-		if current.name != "" && current.version != "" {
-			specs = append(specs, current)
-			current = toolDescriptor{}
+	for name, version := range tools {
+		if v, ok := version.(string); ok {
+			specs = append(specs, toolDescriptor{name: name, version: v})
 		}
 	}
 	return specs
@@ -616,10 +595,29 @@ func buildToolLabels(specs []toolDescriptor) string {
 	return b.String()
 }
 
-func defaultMiseLines(collection collectResult, spec ToolSpec) []string {
-	lines := []string{"[tools]"}
-	seen := map[string]bool{}
-	hasTool := false
+// buildMiseConfig creates a mise.toml configuration with all required tools merged in.
+// If userMiseData is provided, it parses and merges into that config, preserving all sections.
+// User-specified tool versions take precedence over defaults.
+func buildMiseConfig(userMiseData []byte, collection collectResult, spec ToolSpec) ([]byte, error) {
+	// Start with user's config or empty map
+	config := make(map[string]any)
+	if len(userMiseData) > 0 {
+		if err := toml.Unmarshal(userMiseData, &config); err != nil {
+			return nil, fmt.Errorf("failed to parse mise.toml: %w", err)
+		}
+	}
+
+	// Get or create tools section
+	var tools map[string]any
+	if t, ok := config["tools"]; ok {
+		tools, _ = t.(map[string]any)
+	}
+	if tools == nil {
+		tools = make(map[string]any)
+	}
+
+	// Add tools from collection (idiomatic files, .tool-versions, etc.)
+	// Only add if not already specified by user (user versions take precedence)
 	for _, info := range collection.idiomaticInfos {
 		version := strings.TrimSpace(info.version)
 		if version == "" {
@@ -629,33 +627,74 @@ func defaultMiseLines(collection collectResult, spec ToolSpec) []string {
 		if key == "" {
 			key = info.tool
 		}
-		if key == spec.ConfigKey {
-			hasTool = true
+		if _, exists := tools[key]; !exists {
+			tools[key] = version
 		}
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		lines = append(lines, fmt.Sprintf("\"%s\" = \"%s\"", escapeDoubleQuote(key), escapeDoubleQuote(version)))
 	}
-	if !hasTool {
-		lines = append(lines, fmt.Sprintf("\"%s\" = \"latest\"", escapeDoubleQuote(spec.ConfigKey)))
+
+	// Ensure the agent's primary tool is present
+	if _, exists := tools[spec.ConfigKey]; !exists {
+		tools[spec.ConfigKey] = "latest"
 	}
-	return lines
+
+	config["tools"] = tools
+
+	// Marshal back to TOML with sorted keys for deterministic output
+	return marshalMiseConfig(config)
 }
 
-func escapeDoubleQuote(value string) string {
-	if value == "" {
-		return ""
-	}
-	return strings.ReplaceAll(value, "\"", "\"\"")
-}
+// marshalMiseConfig marshals the config to TOML with tools section first and sorted keys
+func marshalMiseConfig(config map[string]any) ([]byte, error) {
+	var buf bytes.Buffer
 
-func escapeForPrintf(line string) string {
-	if line == "" {
-		return ""
+	// Write [tools] section first for readability
+	if tools, ok := config["tools"].(map[string]any); ok && len(tools) > 0 {
+		buf.WriteString("[tools]\n")
+
+		// Sort tool names for deterministic output
+		names := make([]string, 0, len(tools))
+		for name := range tools {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+
+		for _, name := range names {
+			version := tools[name]
+			// Quote the key if it contains special characters
+			quotedName := name
+			if strings.ContainsAny(name, ":@/") {
+				quotedName = fmt.Sprintf("%q", name)
+			}
+			buf.WriteString(fmt.Sprintf("%s = %q\n", quotedName, version))
+		}
 	}
-	return strings.ReplaceAll(line, "'", "'\"'\"'")
+
+	// Write other sections (preserving user's additional config)
+	otherKeys := make([]string, 0)
+	for key := range config {
+		if key != "tools" {
+			otherKeys = append(otherKeys, key)
+		}
+	}
+	sort.Strings(otherKeys)
+
+	for _, key := range otherKeys {
+		value := config[key]
+		// Add blank line before new sections
+		if buf.Len() > 0 {
+			buf.WriteString("\n")
+		}
+
+		// Marshal this section
+		sectionConfig := map[string]any{key: value}
+		sectionBytes, err := toml.Marshal(sectionConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal section %s: %w", key, err)
+		}
+		buf.Write(sectionBytes)
+	}
+
+	return buf.Bytes(), nil
 }
 
 func sanitizeTagComponent(value string) string {
