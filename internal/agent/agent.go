@@ -77,9 +77,8 @@ func Run(cfg Config) error {
 	}
 
 	collection := collectToolSpecs(toolFile, miseFile, spec, imgCfg, cfg.Tool)
-	hasNode := collectionHasNode(toolFile, miseFile, collection)
 	if cfg.DockerfileOnly {
-		fmt.Print(buildDockerfile(toolFile != nil, miseFile != nil, hasNode, collection, spec, imgCfg))
+		fmt.Print(buildDockerfile(toolFile != nil, miseFile != nil, collection, spec, imgCfg, cfg.Tool))
 		return nil
 	}
 	imageName := buildImageName(collection.specs)
@@ -93,7 +92,7 @@ func Run(cfg Config) error {
 	needBuild := !imageExists(ctx, cli, imageName) || cfg.Rebuild
 
 	if needBuild {
-		buildCtx, err := makeBuildContext(toolFile, miseFile, collection, hasNode, spec, imgCfg)
+		buildCtx, err := makeBuildContext(toolFile, miseFile, collection, spec, imgCfg, cfg.Tool)
 		if err != nil {
 			return fmt.Errorf("failed to prepare build context: %w", err)
 		}
@@ -146,9 +145,9 @@ func Run(cfg Config) error {
 	return nil
 }
 
-func makeBuildContext(toolFile, miseFile *fileSpec, collection collectResult, needsLibatomic bool, spec ToolSpec, imgCfg *ImageConfig) (io.Reader, error) {
+func makeBuildContext(toolFile, miseFile *fileSpec, collection collectResult, spec ToolSpec, imgCfg *ImageConfig, agentName string) (io.Reader, error) {
 
-	dockerfile := buildDockerfile(toolFile != nil, miseFile != nil, needsLibatomic, collection, spec, imgCfg)
+	dockerfile := buildDockerfile(toolFile != nil, miseFile != nil, collection, spec, imgCfg, agentName)
 
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
@@ -181,7 +180,7 @@ func makeBuildContext(toolFile, miseFile *fileSpec, collection collectResult, ne
 	return bytes.NewReader(buf.Bytes()), nil
 }
 
-func buildDockerfile(hasTool, hasMise, needLibatomic bool, collection collectResult, spec ToolSpec, imgCfg *ImageConfig) string {
+func buildDockerfile(hasTool, hasMise bool, collection collectResult, spec ToolSpec, imgCfg *ImageConfig, agentName string) string {
 	var b strings.Builder
 
 	// Use configured base image
@@ -190,8 +189,10 @@ func buildDockerfile(hasTool, hasMise, needLibatomic bool, collection collectRes
 		baseImage = "debian:12-slim"
 	}
 
-	// Use configured packages (already includes libatomic1 in default config)
-	packages := imgCfg.Image.Packages
+	// Collect packages: base packages + additional packages from tool dependencies
+	packages := append([]string{}, imgCfg.Image.Packages...)
+	packages = append(packages, imgCfg.ResolveAdditionalPackages(agentName)...)
+	packages = dedupeStrings(packages)
 
 	b.WriteString(fmt.Sprintf("FROM %s\n\n", baseImage))
 	b.WriteString("RUN apt-get update && apt-get install -y --no-install-recommends ")
@@ -370,22 +371,6 @@ func ensureToolInfo(infos []idiomaticInfo, spec ToolSpec) []idiomaticInfo {
 	return append(infos, idiomaticInfo{tool: spec.MiseToolName, version: "latest", configKey: spec.ConfigKey})
 }
 
-func collectionHasNode(toolFile, miseFile *fileSpec, collection collectResult) bool {
-	if containsNodeSpec(toolFile) || containsNodeSpec(miseFile) {
-		return true
-	}
-	return hasNodeTool(collection.specs)
-}
-
-func hasNodeTool(specs []toolDescriptor) bool {
-	for _, spec := range specs {
-		if spec.name == "node" {
-			return true
-		}
-	}
-	return false
-}
-
 func uniquePaths(infos []idiomaticInfo) []string {
 	seen := map[string]bool{}
 	var result []string
@@ -398,6 +383,19 @@ func uniquePaths(infos []idiomaticInfo) []string {
 		}
 		seen[info.path] = true
 		result = append(result, info.path)
+	}
+	return result
+}
+
+func dedupeStrings(items []string) []string {
+	seen := map[string]bool{}
+	var result []string
+	for _, item := range items {
+		if seen[item] {
+			continue
+		}
+		seen[item] = true
+		result = append(result, item)
 	}
 	return result
 }
@@ -675,13 +673,6 @@ func sanitizeTagComponent(value string) string {
 	}
 	out := strings.Trim(b.String(), "-")
 	return out
-}
-
-func containsNodeSpec(spec *fileSpec) bool {
-	if spec == nil {
-		return false
-	}
-	return strings.Contains(strings.ToLower(string(spec.data)), "node")
 }
 
 func writeFileToTar(tw *tar.Writer, name string, data []byte, mode int64) error {

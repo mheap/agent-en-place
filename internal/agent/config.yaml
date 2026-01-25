@@ -2,6 +2,8 @@ tools:
   node:
     version: latest
     depends: python # Needed for native modules and node-gyp
+    additionalPackages:
+      - libatomic1
   python:
     version: latest
 
@@ -53,7 +55,6 @@ image:
     - git
     - gnupg
     - apt-transport-https
-    - libatomic1 # Needed for node
 
 mise:
   install:

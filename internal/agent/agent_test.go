@@ -91,8 +91,8 @@ func TestDockerfile_Basic(t *testing.T) {
 			spec := getToolSpec(t, imgCfg, tt.tool)
 			collection := buildDefaultCollection(tt.tool, spec)
 
-			// Basic case: no .tool-versions, no mise.toml, but needs libatomic (node)
-			got := buildDockerfile(false, false, true, collection, spec, imgCfg)
+			// Basic case: no .tool-versions, no mise.toml
+			got := buildDockerfile(false, false, collection, spec, imgCfg, tt.tool)
 
 			goldenTest(t, "dockerfile_"+tt.name+"_basic.golden", got)
 		})
@@ -115,8 +115,8 @@ func TestDockerfile_Claude_WithToolVersions(t *testing.T) {
 		},
 	}
 
-	// hasTool=true, hasMise=false, needLibatomic=true
-	got := buildDockerfile(true, false, true, collection, spec, imgCfg)
+	// hasTool=true, hasMise=false
+	got := buildDockerfile(true, false, collection, spec, imgCfg, "claude")
 
 	goldenTest(t, "dockerfile_claude_with_tool_versions.golden", got)
 }
@@ -139,8 +139,8 @@ func TestDockerfile_Claude_WithMiseToml(t *testing.T) {
 		},
 	}
 
-	// hasTool=false, hasMise=true, needLibatomic=true
-	got := buildDockerfile(false, true, true, collection, spec, imgCfg)
+	// hasTool=false, hasMise=true
+	got := buildDockerfile(false, true, collection, spec, imgCfg, "claude")
 
 	goldenTest(t, "dockerfile_claude_with_mise_toml.golden", got)
 }
@@ -161,8 +161,8 @@ func TestDockerfile_Claude_WithNodeVersion(t *testing.T) {
 		},
 	}
 
-	// hasTool=false, hasMise=false, needLibatomic=true (has node)
-	got := buildDockerfile(false, false, true, collection, spec, imgCfg)
+	// hasTool=false, hasMise=false
+	got := buildDockerfile(false, false, collection, spec, imgCfg, "claude")
 
 	goldenTest(t, "dockerfile_claude_with_node_version.golden", got)
 }
@@ -185,8 +185,8 @@ func TestDockerfile_Claude_WithBothConfigs(t *testing.T) {
 		},
 	}
 
-	// hasTool=true, hasMise=true, needLibatomic=true
-	got := buildDockerfile(true, true, true, collection, spec, imgCfg)
+	// hasTool=true, hasMise=true
+	got := buildDockerfile(true, true, collection, spec, imgCfg, "claude")
 
 	goldenTest(t, "dockerfile_claude_with_both_configs.golden", got)
 }
@@ -195,7 +195,7 @@ func TestDockerfile_Claude_WithoutNode(t *testing.T) {
 	imgCfg := loadTestConfig(t)
 	spec := getToolSpec(t, imgCfg, "claude")
 
-	// Simulate a case with only python (no node) - libatomic not needed
+	// Simulate a case with only python (no node) - additionalPackages from node not included
 	collection := collectResult{
 		specs: []toolDescriptor{
 			{name: "python", version: "3.12.0", labelName: "python"},
@@ -207,8 +207,8 @@ func TestDockerfile_Claude_WithoutNode(t *testing.T) {
 		},
 	}
 
-	// hasTool=false, hasMise=false, needLibatomic=false (no node)
-	got := buildDockerfile(false, false, false, collection, spec, imgCfg)
+	// hasTool=false, hasMise=false
+	got := buildDockerfile(false, false, collection, spec, imgCfg, "claude")
 
 	goldenTest(t, "dockerfile_claude_without_node.golden", got)
 }

@@ -19,8 +19,9 @@ type ImageConfig struct {
 
 // ToolConfigEntry defines a tool with version and dependencies
 type ToolConfigEntry struct {
-	Version string `yaml:"version"`
-	Depends string `yaml:"depends"`
+	Version            string   `yaml:"version"`
+	Depends            string   `yaml:"depends"`
+	AdditionalPackages []string `yaml:"additionalPackages"`
 }
 
 // AgentConfig defines an agent's configuration
@@ -255,4 +256,40 @@ func (a AgentConfig) ToToolSpec() ToolSpec {
 		AdditionalMounts: a.AdditionalMounts,
 		EnvVars:          a.EnvVars,
 	}
+}
+
+// ResolveAdditionalPackages resolves all additional apt packages needed for an agent
+// by traversing the agent's tool dependencies and collecting their additionalPackages
+func (c *ImageConfig) ResolveAdditionalPackages(agentName string) []string {
+	agent, ok := c.Agents[agentName]
+	if !ok {
+		return nil
+	}
+
+	var packages []string
+	seen := make(map[string]bool)
+
+	// Process dependencies using a queue for breadth-first resolution
+	queue := make([]string, len(agent.Depends))
+	copy(queue, agent.Depends)
+
+	for len(queue) > 0 {
+		toolName := queue[0]
+		queue = queue[1:]
+
+		if seen[toolName] {
+			continue
+		}
+		seen[toolName] = true
+
+		tool := c.Tools[toolName]
+		packages = append(packages, tool.AdditionalPackages...)
+
+		// Add transitive dependencies to queue
+		if tool.Depends != "" {
+			queue = append(queue, tool.Depends)
+		}
+	}
+
+	return packages
 }
