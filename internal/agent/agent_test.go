@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -211,4 +212,87 @@ func TestDockerfile_Claude_WithoutNode(t *testing.T) {
 	got := buildDockerfile(false, false, collection, spec, imgCfg, "claude")
 
 	goldenTest(t, "dockerfile_claude_without_node.golden", got)
+}
+
+func TestHandleBuildOutput_Success(t *testing.T) {
+	// Simulate successful Docker build output
+	output := `{"stream":"Step 1/5 : FROM debian:12-slim\n"}
+{"stream":"---\u003e abc123\n"}
+{"stream":"Step 2/5 : RUN apt-get update\n"}
+{"stream":"---\u003e Running in def456\n"}
+{"stream":"Successfully built abc123\n"}
+{"stream":"Successfully tagged myimage:latest\n"}
+`
+	reader := strings.NewReader(output)
+	err := handleBuildOutput(reader, false, "myimage:latest")
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestHandleBuildOutput_Error(t *testing.T) {
+	// Simulate Docker build output with an error
+	output := `{"stream":"Step 1/5 : FROM debian:12-slim\n"}
+{"stream":"---\u003e abc123\n"}
+{"stream":"Step 2/5 : RUN apt-get install nonexistent\n"}
+{"stream":"Reading package lists...\n"}
+{"stream":"E: Unable to locate package nonexistent\n"}
+{"error":"The command '/bin/sh -c apt-get install nonexistent' returned a non-zero code: 100"}
+`
+	reader := strings.NewReader(output)
+	err := handleBuildOutput(reader, false, "myimage:latest")
+
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+
+	errMsg := err.Error()
+
+	// Check error message format
+	if !strings.Contains(errMsg, "Error building docker image myimage:latest") {
+		t.Errorf("error message should contain image name, got: %s", errMsg)
+	}
+
+	// Check that it contains the last meaningful output lines
+	if !strings.Contains(errMsg, "E: Unable to locate package nonexistent") {
+		t.Errorf("error message should contain last output line, got: %s", errMsg)
+	}
+}
+
+func TestHandleBuildOutput_FiltersWhitespace(t *testing.T) {
+	// Simulate Docker build output with whitespace-only lines
+	output := `{"stream":"Step 1/5 : FROM debian:12-slim\n"}
+{"stream":"\n"}
+{"stream":"   \n"}
+{"stream":"Actual content line 1\n"}
+{"stream":"\t\n"}
+{"stream":"Actual content line 2\n"}
+{"stream":"Actual content line 3\n"}
+{"stream":"Actual content line 4\n"}
+{"error":"Build failed"}
+`
+	reader := strings.NewReader(output)
+	err := handleBuildOutput(reader, false, "test:image")
+
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+
+	errMsg := err.Error()
+
+	// Should contain last 3 non-whitespace lines
+	if !strings.Contains(errMsg, "Actual content line 2") {
+		t.Errorf("error should contain 'Actual content line 2', got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "Actual content line 3") {
+		t.Errorf("error should contain 'Actual content line 3', got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "Actual content line 4") {
+		t.Errorf("error should contain 'Actual content line 4', got: %s", errMsg)
+	}
+
+	// Should NOT contain "Step 1/5" as it should have been rotated out
+	if strings.Contains(errMsg, "Step 1/5") {
+		t.Errorf("error should not contain old lines that were rotated out, got: %s", errMsg)
+	}
 }
