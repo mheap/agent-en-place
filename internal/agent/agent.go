@@ -97,11 +97,20 @@ func Run(cfg Config) error {
 		if miseFile != nil {
 			userMiseData = miseFile.data
 		}
-		miseData, err := buildAgentMiseConfig(userMiseData, collection, spec)
+		agentMiseData, err := buildAgentMiseConfig(userMiseData, collection, spec)
 		if err != nil {
 			return fmt.Errorf("failed to build mise.agent.toml: %w", err)
 		}
-		fmt.Print(string(miseData))
+
+		// Output user's mise.toml if present
+		if miseFile != nil {
+			fmt.Println("# mise.toml (user)")
+			fmt.Println(string(miseFile.data))
+		}
+
+		// Output agent's mise.agent.toml
+		fmt.Println("# mise.agent.toml (generated)")
+		fmt.Print(string(agentMiseData))
 		return nil
 	}
 	imageName := buildImageName(collection.specs)
