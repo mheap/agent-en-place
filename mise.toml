@@ -1,0 +1,7 @@
+[tasks.test]
+description = "Run tests"
+run = "go test ./..."
+
+[tasks.test-update]
+description = "Run tests and update golden files"
+run = "UPDATE_GOLDEN_TESTS=true go test ./..."
