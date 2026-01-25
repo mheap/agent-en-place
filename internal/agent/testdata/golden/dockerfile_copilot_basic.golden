@@ -12,11 +12,8 @@ RUN mkdir -p /home/agent/.config/mise
 LABEL com.mheap.agent-en-place.copilot="latest"
 LABEL com.mheap.agent-en-place.node="latest"
 WORKDIR /home/agent
-RUN printf '%s\n' \
-  '[tools]' \
-  '"npm:@github/copilot" = "latest"' \
-  '"node" = "latest"' \
-  > /home/agent/.config/mise/config.toml
+COPY mise.toml /home/agent/.config/mise/config.toml
+RUN chown agent:agent /home/agent/.config/mise/config.toml
 COPY assets/agent-entrypoint.sh /usr/local/bin/agent-entrypoint
 RUN chmod +x /usr/local/bin/agent-entrypoint
 USER agent

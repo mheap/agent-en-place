@@ -13,11 +13,7 @@ LABEL com.mheap.agent-en-place.node="20.10.0"
 LABEL com.mheap.agent-en-place.claude="latest"
 WORKDIR /home/agent
 COPY .tool-versions .tool-versions
-RUN printf '%s\n' \
-  '[tools]' \
-  '"node" = "20.10.0"' \
-  '"npm:@anthropic-ai/claude-code" = "latest"' \
-  > /home/agent/.config/mise/config.toml
+COPY mise.toml /home/agent/.config/mise/config.toml
 RUN chown agent:agent .tool-versions /home/agent/.config/mise/config.toml
 COPY assets/agent-entrypoint.sh /usr/local/bin/agent-entrypoint
 RUN chmod +x /usr/local/bin/agent-entrypoint
