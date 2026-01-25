@@ -31,6 +31,7 @@ type Config struct {
 	Debug          bool
 	Rebuild        bool
 	DockerfileOnly bool
+	MiseFileOnly   bool
 	Tool           string
 	ConfigPath     string
 }
@@ -89,6 +90,18 @@ func Run(cfg Config) error {
 	collection := collectToolSpecs(toolFile, miseFile, spec, imgCfg, cfg.Tool)
 	if cfg.DockerfileOnly {
 		fmt.Print(buildDockerfile(toolFile != nil, collection, spec, imgCfg, cfg.Tool))
+		return nil
+	}
+	if cfg.MiseFileOnly {
+		var userMiseData []byte
+		if miseFile != nil {
+			userMiseData = miseFile.data
+		}
+		miseData, err := buildMiseConfig(userMiseData, collection, spec)
+		if err != nil {
+			return fmt.Errorf("failed to build mise.toml: %w", err)
+		}
+		fmt.Print(string(miseData))
 		return nil
 	}
 	imageName := buildImageName(collection.specs)
@@ -321,10 +334,21 @@ func collectToolSpecs(toolFile, miseFile *fileSpec, spec ToolSpec, imgCfg *Image
 
 	deduped := dedupeToolSpecs(specs)
 	deduped = ensureDefaultTool(deduped, spec)
-	infos := ensureToolInfo(idiomatic, spec)
+
+	// Build idiomaticInfos: start with idiomatic files, then add config tool dependencies
+	infos := append([]idiomaticInfo{}, idiomatic...)
+	for _, dep := range configTools {
+		infos = append(infos, idiomaticInfo{
+			tool:      dep.name,
+			version:   dep.version,
+			configKey: dep.name,
+		})
+	}
+	infos = ensureToolInfo(infos, spec)
+
 	return collectResult{
 		specs:          deduped,
-		idiomaticPaths: uniquePaths(infos),
+		idiomaticPaths: uniquePaths(idiomatic), // Only idiomatic files need to be copied
 		idiomaticInfos: infos,
 	}
 }
