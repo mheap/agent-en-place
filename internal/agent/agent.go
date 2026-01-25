@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -39,6 +40,13 @@ type ToolSpec struct {
 	ConfigDir        string
 	AdditionalMounts []string
 	EnvVars          []string
+}
+
+// dockerBuildMessage represents a message from the Docker build output stream.
+// Docker returns newline-delimited JSON objects during image builds.
+type dockerBuildMessage struct {
+	Stream string `json:"stream"`
+	Error  string `json:"error"`
 }
 
 // getLabelName returns a friendly label name for a tool
@@ -109,8 +117,8 @@ func Run(cfg Config) error {
 		}
 		defer buildResp.Body.Close()
 
-		if err := handleBuildOutput(buildResp.Body, cfg.Debug); err != nil {
-			return fmt.Errorf("failed to read build output: %w", err)
+		if err := handleBuildOutput(buildResp.Body, cfg.Debug, imageName); err != nil {
+			return err
 		}
 	}
 
@@ -706,13 +714,52 @@ func writeIdiomaticFiles(tw *tar.Writer, paths []string) error {
 	return nil
 }
 
-func handleBuildOutput(rc io.Reader, debug bool) error {
-	if debug {
-		_, err := io.Copy(os.Stdout, rc)
-		return err
+func handleBuildOutput(rc io.Reader, debug bool, imageName string) error {
+	scanner := bufio.NewScanner(rc)
+	// Keep last 3 non-empty lines of output for error reporting
+	const maxLines = 3
+	lastLines := make([]string, 0, maxLines)
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+
+		var msg dockerBuildMessage
+		if err := json.Unmarshal(line, &msg); err != nil {
+			// If we can't parse as JSON, skip this line
+			continue
+		}
+
+		// Print stream output in debug mode
+		if debug && msg.Stream != "" {
+			fmt.Print(msg.Stream)
+		}
+
+		// Track non-empty stream lines for error context
+		if msg.Stream != "" {
+			trimmed := strings.TrimSpace(msg.Stream)
+			if trimmed != "" {
+				if len(lastLines) >= maxLines {
+					// Shift elements left, discarding oldest
+					copy(lastLines, lastLines[1:])
+					lastLines[maxLines-1] = trimmed
+				} else {
+					lastLines = append(lastLines, trimmed)
+				}
+			}
+		}
+
+		// Check for build errors
+		if msg.Error != "" {
+			context := strings.Join(lastLines, "\n")
+			return fmt.Errorf("Error building docker image %s:\n%s", imageName, context)
+		}
 	}
-	_, err := io.Copy(io.Discard, rc)
-	return err
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("failed to read build output: %w", err)
+	}
+
+	return nil
 }
 
 func imageExists(ctx context.Context, cli *client.Client, name string) bool {
