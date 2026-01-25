@@ -116,6 +116,13 @@ Currently supported providers:
 - **Configuration**: Stored in `~/.copilot`
 - **Environment**: Automatically uses `GH_TOKEN` from `gh` CLI
 
+### `gemini`
+
+- **Package**: `@google/gemini-cli`
+- **Command**: `gemini --yolo`
+- **Configuration**: Stored in `~/.gemini`
+
+
 ## How It Works
 
 1. **Configuration Detection**: Scans current directory for `.tool-versions`, `mise.toml`, and idiomatic version files

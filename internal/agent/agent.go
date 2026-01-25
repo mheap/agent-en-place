@@ -58,6 +58,12 @@ var toolSpecs = map[string]ToolSpec{
 		ConfigDir:    ".copilot",
 		EnvVars:      []string{"GH_TOKEN=\"$(gh auth token -h github.com)\""},
 	},
+	"gemini": {
+		MiseToolName: "npm:@google/gemini-cli",
+		ConfigKey:    "npm:@google/gemini-cli",
+		Command:      "gemini --yolo",
+		ConfigDir:    ".gemini",
+	},
 }
 
 func Run(cfg Config) error {
