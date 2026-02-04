@@ -231,9 +231,11 @@ func (c *ImageConfig) AgentNames() []string {
 	return names
 }
 
-// ResolveToolDeps resolves all tool dependencies for an agent
+// ResolveToolDeps resolves all tool dependencies for an agent.
+// userTools contains tools explicitly specified by the user - only these get transitive deps resolved.
+// When debug is true, logs which transitive dependencies were skipped.
 // Returns tools in dependency order (dependencies first)
-func (c *ImageConfig) ResolveToolDeps(agentName string) []toolDescriptor {
+func (c *ImageConfig) ResolveToolDeps(agentName string, userTools map[string]bool, debug bool) []toolDescriptor {
 	agent, ok := c.Agents[agentName]
 	if !ok {
 		return nil
@@ -261,11 +263,15 @@ func (c *ImageConfig) ResolveToolDeps(agentName string) []toolDescriptor {
 			version = "latest"
 		}
 
-		result = append(result, toolDescriptor{name: toolName, version: version})
+		result = append(result, toolDescriptor{name: toolName, version: version, source: sourceConfig})
 
-		// Add transitive dependencies to queue
+		// Only resolve transitive dependencies if this tool was user-specified
 		if tool.Depends != "" {
-			queue = append(queue, tool.Depends)
+			if userTools[toolName] {
+				queue = append(queue, tool.Depends)
+			} else if debug {
+				fmt.Fprintf(os.Stderr, "debug: skipping transitive dependency %q of %q (not user-specified)\n", tool.Depends, toolName)
+			}
 		}
 	}
 
@@ -285,8 +291,9 @@ func (a AgentConfig) ToToolSpec() ToolSpec {
 }
 
 // ResolveAdditionalPackages resolves all additional apt packages needed for an agent
-// by traversing the agent's tool dependencies and collecting their additionalPackages
-func (c *ImageConfig) ResolveAdditionalPackages(agentName string) []string {
+// by traversing the agent's tool dependencies and collecting their additionalPackages.
+// userTools contains tools explicitly specified by the user - only these get transitive deps resolved.
+func (c *ImageConfig) ResolveAdditionalPackages(agentName string, userTools map[string]bool) []string {
 	agent, ok := c.Agents[agentName]
 	if !ok {
 		return nil
@@ -311,8 +318,8 @@ func (c *ImageConfig) ResolveAdditionalPackages(agentName string) []string {
 		tool := c.Tools[toolName]
 		packages = append(packages, tool.AdditionalPackages...)
 
-		// Add transitive dependencies to queue
-		if tool.Depends != "" {
+		// Only resolve transitive dependencies if this tool was user-specified
+		if tool.Depends != "" && userTools[toolName] {
 			queue = append(queue, tool.Depends)
 		}
 	}
