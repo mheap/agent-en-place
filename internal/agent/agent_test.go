@@ -504,24 +504,29 @@ func TestBuildAgentMiseConfig_AllAgents(t *testing.T) {
 		notExpectTools []string // Tools that must NOT be present
 	}{
 		{
-			name:          "codex",
-			expectedTools: []string{"npm:@openai/codex", "node", "python"},
+			name:           "codex",
+			expectedTools:  []string{"npm:@openai/codex", "node"},
+			notExpectTools: []string{"python"}, // python not included - node is config-sourced
 		},
 		{
-			name:          "opencode",
-			expectedTools: []string{"npm:opencode-ai", "node", "python"},
+			name:           "opencode",
+			expectedTools:  []string{"npm:opencode-ai", "node"},
+			notExpectTools: []string{"python"},
 		},
 		{
-			name:          "copilot",
-			expectedTools: []string{"npm:@github/copilot", "node", "python"},
+			name:           "copilot",
+			expectedTools:  []string{"npm:@github/copilot", "node"},
+			notExpectTools: []string{"python"},
 		},
 		{
-			name:          "claude",
-			expectedTools: []string{"npm:@anthropic-ai/claude-code", "node", "python"},
+			name:           "claude",
+			expectedTools:  []string{"npm:@anthropic-ai/claude-code", "node"},
+			notExpectTools: []string{"python"},
 		},
 		{
-			name:          "gemini",
-			expectedTools: []string{"npm:@google/gemini-cli", "node", "python"},
+			name:           "gemini",
+			expectedTools:  []string{"npm:@google/gemini-cli", "node"},
+			notExpectTools: []string{"python"},
 		},
 	}
 
@@ -530,7 +535,9 @@ func TestBuildAgentMiseConfig_AllAgents(t *testing.T) {
 			spec := getToolSpec(t, imgCfg, tt.name)
 
 			// Build collection with resolved tool dependencies (simulating real behavior)
-			toolDeps := imgCfg.ResolveToolDeps(tt.name)
+			// No user tools, so transitive deps (python) should not be resolved
+			userTools := map[string]bool{}
+			toolDeps := imgCfg.ResolveToolDeps(tt.name, userTools, false)
 			idiomaticInfos := make([]idiomaticInfo, 0, len(toolDeps))
 			for _, dep := range toolDeps {
 				idiomaticInfos = append(idiomaticInfos, idiomaticInfo{
@@ -592,7 +599,9 @@ go = "1.21.0"
 			spec := getToolSpec(t, imgCfg, agentName)
 
 			// Build collection with resolved tool dependencies
-			toolDeps := imgCfg.ResolveToolDeps(agentName)
+			// User specified ruby and go, but not node - so python should not be resolved
+			userTools := map[string]bool{}
+			toolDeps := imgCfg.ResolveToolDeps(agentName, userTools, false)
 			idiomaticInfos := make([]idiomaticInfo, 0, len(toolDeps))
 			for _, dep := range toolDeps {
 				idiomaticInfos = append(idiomaticInfos, idiomaticInfo{
@@ -628,12 +637,14 @@ go = "1.21.0"
 				t.Errorf("expected agent tool %q to be present, got:\n%s", spec.ConfigKey, result)
 			}
 
-			// Dependencies should be present (user didn't specify them)
+			// Node dependency should be present (user didn't specify it)
 			if !strings.Contains(result, "node") {
 				t.Errorf("expected node dependency to be present, got:\n%s", result)
 			}
-			if !strings.Contains(result, "python") {
-				t.Errorf("expected python dependency to be present, got:\n%s", result)
+
+			// Python should NOT be present - node is config-sourced, so its transitive deps aren't resolved
+			if strings.Contains(result, "python") {
+				t.Errorf("expected python to NOT be present (node is config-sourced), got:\n%s", result)
 			}
 		})
 	}
@@ -655,8 +666,10 @@ python = "3.11.0"
 		t.Run(agentName, func(t *testing.T) {
 			spec := getToolSpec(t, imgCfg, agentName)
 
-			// Build collection with resolved tool dependencies (these have "latest" versions)
-			toolDeps := imgCfg.ResolveToolDeps(agentName)
+			// Build collection with resolved tool dependencies
+			// No user tools specified that are agent dependencies, so python should not be resolved
+			userTools := map[string]bool{}
+			toolDeps := imgCfg.ResolveToolDeps(agentName, userTools, false)
 			idiomaticInfos := make([]idiomaticInfo, 0, len(toolDeps))
 			for _, dep := range toolDeps {
 				idiomaticInfos = append(idiomaticInfos, idiomaticInfo{
@@ -706,7 +719,9 @@ func TestBuildAgentMiseConfig_GoldenFiles(t *testing.T) {
 			spec := getToolSpec(t, imgCfg, agentName)
 
 			// Build collection with resolved tool dependencies
-			toolDeps := imgCfg.ResolveToolDeps(agentName)
+			// No user tools, so transitive deps (python) should not be resolved
+			userTools := map[string]bool{}
+			toolDeps := imgCfg.ResolveToolDeps(agentName, userTools, false)
 			idiomaticInfos := make([]idiomaticInfo, 0, len(toolDeps))
 			for _, dep := range toolDeps {
 				idiomaticInfos = append(idiomaticInfos, idiomaticInfo{
@@ -1195,4 +1210,192 @@ func slicesEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestResolveToolDeps_SkipsTransitiveDepsForConfigTools verifies that transitive
+// dependencies are not resolved when tools come from config (agent dependencies)
+func TestResolveToolDeps_SkipsTransitiveDepsForConfigTools(t *testing.T) {
+	imgCfg := loadTestConfig(t)
+	userTools := map[string]bool{} // No user-specified tools
+
+	deps := imgCfg.ResolveToolDeps("claude", userTools, false)
+
+	toolNames := make(map[string]bool)
+	for _, d := range deps {
+		toolNames[d.name] = true
+	}
+
+	if !toolNames["node"] {
+		t.Error("expected node to be included (direct agent dependency)")
+	}
+	if toolNames["python"] {
+		t.Error("expected python to NOT be included (node is config-sourced, so its transitive deps are skipped)")
+	}
+}
+
+// TestResolveToolDeps_IncludesTransitiveDepsForUserTools verifies that transitive
+// dependencies ARE resolved when the parent tool is user-specified
+func TestResolveToolDeps_IncludesTransitiveDepsForUserTools(t *testing.T) {
+	imgCfg := loadTestConfig(t)
+	userTools := map[string]bool{"node": true} // User explicitly specified node
+
+	deps := imgCfg.ResolveToolDeps("claude", userTools, false)
+
+	toolNames := make(map[string]bool)
+	for _, d := range deps {
+		toolNames[d.name] = true
+	}
+
+	if !toolNames["node"] {
+		t.Error("expected node to be included")
+	}
+	if !toolNames["python"] {
+		t.Error("expected python to be included (node is user-specified, so its transitive deps are resolved)")
+	}
+}
+
+// TestResolveToolDeps_SourceIsConfig verifies that tools from ResolveToolDeps have sourceConfig
+func TestResolveToolDeps_SourceIsConfig(t *testing.T) {
+	imgCfg := loadTestConfig(t)
+	userTools := map[string]bool{}
+
+	deps := imgCfg.ResolveToolDeps("claude", userTools, false)
+
+	for _, d := range deps {
+		if d.source != sourceConfig {
+			t.Errorf("expected tool %q to have source %q, got %q", d.name, sourceConfig, d.source)
+		}
+	}
+}
+
+// TestResolveAdditionalPackages_SkipsTransitivePackages verifies that additional packages
+// from transitive dependencies are not included when parent tool is config-sourced
+func TestResolveAdditionalPackages_SkipsTransitivePackages(t *testing.T) {
+	imgCfg := loadTestConfig(t)
+	userTools := map[string]bool{} // No user-specified tools
+
+	packages := imgCfg.ResolveAdditionalPackages("claude", userTools)
+
+	// Should have libatomic1 from node (direct agent dependency)
+	hasLibatomic := false
+	for _, pkg := range packages {
+		if pkg == "libatomic1" {
+			hasLibatomic = true
+			break
+		}
+	}
+
+	if !hasLibatomic {
+		t.Error("expected libatomic1 to be included (from node, which is a direct agent dependency)")
+	}
+}
+
+// TestResolveAdditionalPackages_IncludesTransitivePackages verifies that additional packages
+// from transitive dependencies ARE included when parent tool is user-specified
+func TestResolveAdditionalPackages_IncludesTransitivePackages(t *testing.T) {
+	imgCfg := loadTestConfig(t)
+	userTools := map[string]bool{"node": true} // User explicitly specified node
+
+	packages := imgCfg.ResolveAdditionalPackages("claude", userTools)
+
+	// Should have libatomic1 from node
+	hasLibatomic := false
+	for _, pkg := range packages {
+		if pkg == "libatomic1" {
+			hasLibatomic = true
+			break
+		}
+	}
+
+	if !hasLibatomic {
+		t.Error("expected libatomic1 to be included (from node)")
+	}
+}
+
+// TestDedupeToolSpecs_PreservesSource verifies that deduplication preserves the source
+// from the first occurrence (which has higher priority)
+func TestDedupeToolSpecs_PreservesSource(t *testing.T) {
+	specs := []toolDescriptor{
+		{name: "node", version: "20.0.0", source: sourceUser},     // User-specified first
+		{name: "node", version: "latest", source: sourceConfig},   // Config second (should be ignored)
+		{name: "python", version: "latest", source: sourceConfig}, // Only config
+	}
+
+	deduped := dedupeToolSpecs(specs)
+
+	if len(deduped) != 2 {
+		t.Fatalf("expected 2 tools after dedup, got %d", len(deduped))
+	}
+
+	// Find node in deduped
+	var nodeSpec *toolDescriptor
+	var pythonSpec *toolDescriptor
+	for i := range deduped {
+		if deduped[i].name == "node" {
+			nodeSpec = &deduped[i]
+		}
+		if deduped[i].name == "python" {
+			pythonSpec = &deduped[i]
+		}
+	}
+
+	if nodeSpec == nil {
+		t.Fatal("expected node in deduped specs")
+	}
+	if nodeSpec.source != sourceUser {
+		t.Errorf("expected node to have source %q (first wins), got %q", sourceUser, nodeSpec.source)
+	}
+	if nodeSpec.version != "20.0.0" {
+		t.Errorf("expected node to have version %q (first wins), got %q", "20.0.0", nodeSpec.version)
+	}
+
+	if pythonSpec == nil {
+		t.Fatal("expected python in deduped specs")
+	}
+	if pythonSpec.source != sourceConfig {
+		t.Errorf("expected python to have source %q, got %q", sourceConfig, pythonSpec.source)
+	}
+}
+
+// TestParseToolVersions_SetsSourceUser verifies that parseToolVersions sets sourceUser
+func TestParseToolVersions_SetsSourceUser(t *testing.T) {
+	spec := &fileSpec{
+		path: ".tool-versions",
+		data: []byte("node 20.0.0\npython 3.11.0"),
+	}
+
+	specs := parseToolVersions(spec)
+
+	if len(specs) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(specs))
+	}
+
+	for _, s := range specs {
+		if s.source != sourceUser {
+			t.Errorf("expected tool %q to have source %q, got %q", s.name, sourceUser, s.source)
+		}
+	}
+}
+
+// TestParseMiseToml_SetsSourceUser verifies that parseMiseToml sets sourceUser
+func TestParseMiseToml_SetsSourceUser(t *testing.T) {
+	spec := &fileSpec{
+		path: "mise.toml",
+		data: []byte(`[tools]
+node = "20.0.0"
+python = "3.11.0"
+`),
+	}
+
+	specs := parseMiseToml(spec)
+
+	if len(specs) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(specs))
+	}
+
+	for _, s := range specs {
+		if s.source != sourceUser {
+			t.Errorf("expected tool %q to have source %q, got %q", s.name, sourceUser, s.source)
+		}
+	}
 }

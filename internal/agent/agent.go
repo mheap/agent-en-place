@@ -87,7 +87,7 @@ func Run(cfg Config) error {
 		return fmt.Errorf("failed to read mise.toml: %w", err)
 	}
 
-	collection := collectToolSpecs(toolFile, miseFile, spec, imgCfg, cfg.Tool)
+	collection := collectToolSpecs(toolFile, miseFile, spec, imgCfg, cfg.Tool, cfg.Debug)
 	if cfg.DockerfileOnly {
 		fmt.Print(buildDockerfile(toolFile != nil, miseFile != nil, collection, spec, imgCfg, cfg.Tool))
 		return nil
@@ -243,7 +243,7 @@ func buildDockerfile(hasTool, hasMise bool, collection collectResult, spec ToolS
 
 	// Collect packages: base packages + additional packages from tool dependencies
 	packages := append([]string{}, imgCfg.Image.Packages...)
-	packages = append(packages, imgCfg.ResolveAdditionalPackages(agentName)...)
+	packages = append(packages, imgCfg.ResolveAdditionalPackages(agentName, collection.userTools)...)
 	packages = dedupeStrings(packages)
 
 	b.WriteString(fmt.Sprintf("FROM %s\n\n", baseImage))
@@ -340,16 +340,27 @@ func optionalFileSpec(path string) (*fileSpec, error) {
 	}, nil
 }
 
+// toolSource indicates where a tool specification originated
+type toolSource string
+
+const (
+	sourceUser      toolSource = "user"      // .tool-versions, mise.toml
+	sourceIdiomatic toolSource = "idiomatic" // .node-version, .python-version, go.mod, etc.
+	sourceConfig    toolSource = "config"    // agent dependency resolution from config.yaml
+)
+
 type toolDescriptor struct {
 	name      string
 	version   string
-	labelName string // friendly name for Docker labels (e.g., "codex" instead of "npm-openai-codex")
+	labelName string     // friendly name for Docker labels (e.g., "codex" instead of "npm-openai-codex")
+	source    toolSource // tracks origin of this tool
 }
 
 type collectResult struct {
 	specs          []toolDescriptor
 	idiomaticPaths []string
 	idiomaticInfos []idiomaticInfo
+	userTools      map[string]bool // tools specified by user/idiomatic sources
 }
 
 type idiomaticInfo struct {
@@ -357,9 +368,10 @@ type idiomaticInfo struct {
 	version   string
 	path      string
 	configKey string
+	source    toolSource // tracks origin of this tool
 }
 
-func collectToolSpecs(toolFile, miseFile *fileSpec, spec ToolSpec, imgCfg *ImageConfig, agentName string) collectResult {
+func collectToolSpecs(toolFile, miseFile *fileSpec, spec ToolSpec, imgCfg *ImageConfig, agentName string, debug bool) collectResult {
 	specs := parseToolVersions(toolFile)
 	specs = append(specs, parseMiseToml(miseFile)...)
 	idiomatic := parseIdiomaticFiles()
@@ -367,12 +379,21 @@ func collectToolSpecs(toolFile, miseFile *fileSpec, spec ToolSpec, imgCfg *Image
 		if info.version == "" {
 			continue
 		}
-		specs = append(specs, toolDescriptor{name: info.tool, version: info.version})
+		specs = append(specs, toolDescriptor{name: info.tool, version: info.version, source: sourceIdiomatic})
+	}
+
+	// Build set of user-specified tools (for conditional transitive dep resolution)
+	userTools := make(map[string]bool)
+	for _, s := range specs {
+		if s.source == sourceUser || s.source == sourceIdiomatic {
+			userTools[sanitizeTagComponent(s.name)] = true
+		}
 	}
 
 	// Add tools from config's dependency resolution
 	// These come after mise.toml/.tool-versions so they have lower priority
-	configTools := imgCfg.ResolveToolDeps(agentName)
+	// Pass userTools so transitive deps are only resolved for user-specified tools
+	configTools := imgCfg.ResolveToolDeps(agentName, userTools, debug)
 	specs = append(specs, configTools...)
 
 	deduped := dedupeToolSpecs(specs)
@@ -385,6 +406,7 @@ func collectToolSpecs(toolFile, miseFile *fileSpec, spec ToolSpec, imgCfg *Image
 			tool:      dep.name,
 			version:   dep.version,
 			configKey: dep.name,
+			source:    sourceConfig,
 		})
 	}
 	infos = ensureToolInfo(infos, spec)
@@ -393,6 +415,7 @@ func collectToolSpecs(toolFile, miseFile *fileSpec, spec ToolSpec, imgCfg *Image
 		specs:          deduped,
 		idiomaticPaths: uniquePaths(idiomatic), // Only idiomatic files need to be copied
 		idiomaticInfos: infos,
+		userTools:      userTools,
 	}
 }
 
@@ -416,7 +439,7 @@ func dedupeToolSpecs(specs []toolDescriptor) []toolDescriptor {
 		if labelName == "" {
 			labelName = getLabelName(spec.name)
 		}
-		result = append(result, toolDescriptor{name: key, version: version, labelName: labelName})
+		result = append(result, toolDescriptor{name: key, version: version, labelName: labelName, source: spec.source})
 	}
 	return result
 }
@@ -493,7 +516,7 @@ func parseToolVersions(spec *fileSpec) []toolDescriptor {
 		if len(fields) > 1 {
 			version = fields[1]
 		}
-		specs = append(specs, toolDescriptor{name: name, version: version})
+		specs = append(specs, toolDescriptor{name: name, version: version, source: sourceUser})
 	}
 	return specs
 }
@@ -517,7 +540,7 @@ func parseMiseToml(spec *fileSpec) []toolDescriptor {
 	var specs []toolDescriptor
 	for name, version := range tools {
 		if v, ok := version.(string); ok {
-			specs = append(specs, toolDescriptor{name: name, version: v})
+			specs = append(specs, toolDescriptor{name: name, version: v, source: sourceUser})
 		}
 	}
 	return specs
@@ -547,7 +570,7 @@ func parseIdiomaticFiles() []idiomaticInfo {
 			if strings.Contains(tool, ":") {
 				configKey = tool
 			}
-			infos = append(infos, idiomaticInfo{tool: tool, version: version, path: path, configKey: configKey})
+			infos = append(infos, idiomaticInfo{tool: tool, version: version, path: path, configKey: configKey, source: sourceIdiomatic})
 			break
 		}
 	}
