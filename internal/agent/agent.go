@@ -526,7 +526,7 @@ func parseMiseToml(spec *fileSpec) []toolDescriptor {
 var idiomaticToolFiles = map[string][]string{
 	"crystal": {".crystal-version"},
 	"elixir":  {".exenv-version"},
-	"go":      {".go-version"},
+	"go":      {".go-version", "go.mod"},
 	"java":    {".java-version", ".sdkmanrc"},
 	"node":    {".nvmrc", ".node-version"},
 	"python":  {".python-version", ".python-versions"},
@@ -560,6 +560,8 @@ func readIdiomaticVersion(tool, path string) (string, bool) {
 		return parseGemfileVersion(path)
 	case ".sdkmanrc":
 		return parseSdkmanVersion(path)
+	case "go.mod":
+		return parseGoModVersion(path)
 	default:
 		line, ok := readFirstLine(path)
 		if !ok {
@@ -614,6 +616,23 @@ func parseSdkmanVersion(path string) (string, bool) {
 		line := strings.TrimSpace(scanner.Text())
 		if strings.HasPrefix(line, "java=") {
 			version := strings.TrimPrefix(line, "java=")
+			return version, version != ""
+		}
+	}
+	return "", false
+}
+
+func parseGoModVersion(path string) (string, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "go ") {
+			version := strings.TrimPrefix(line, "go ")
+			version = strings.TrimSpace(version)
 			return version, version != ""
 		}
 	}

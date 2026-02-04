@@ -731,3 +731,328 @@ func TestBuildAgentMiseConfig_GoldenFiles(t *testing.T) {
 		})
 	}
 }
+
+func TestParseGoModVersion(t *testing.T) {
+	tests := []struct {
+		name        string
+		content     string
+		wantVersion string
+		wantOk      bool
+	}{
+		{
+			name: "simple go directive",
+			content: `module example.com/myapp
+
+go 1.21.0
+
+require (
+	github.com/example/dep v1.0.0
+)
+`,
+			wantVersion: "1.21.0",
+			wantOk:      true,
+		},
+		{
+			name: "go directive without patch version",
+			content: `module example.com/myapp
+
+go 1.21
+
+require (
+	github.com/example/dep v1.0.0
+)
+`,
+			wantVersion: "1.21",
+			wantOk:      true,
+		},
+		{
+			name: "go directive with toolchain",
+			content: `module example.com/myapp
+
+go 1.24.4
+
+toolchain go1.24.5
+
+require (
+	github.com/example/dep v1.0.0
+)
+`,
+			wantVersion: "1.24.4",
+			wantOk:      true,
+		},
+		{
+			name: "no go directive",
+			content: `module example.com/myapp
+
+require (
+	github.com/example/dep v1.0.0
+)
+`,
+			wantVersion: "",
+			wantOk:      false,
+		},
+		{
+			name:        "empty file",
+			content:     "",
+			wantVersion: "",
+			wantOk:      false,
+		},
+		{
+			name: "go directive with extra whitespace",
+			content: `module example.com/myapp
+
+go   1.22.3  
+
+require (
+	github.com/example/dep v1.0.0
+)
+`,
+			wantVersion: "1.22.3",
+			wantOk:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create temp file
+			tmpDir := t.TempDir()
+			goModPath := filepath.Join(tmpDir, "go.mod")
+			if err := os.WriteFile(goModPath, []byte(tt.content), 0644); err != nil {
+				t.Fatalf("failed to write test file: %v", err)
+			}
+
+			gotVersion, gotOk := parseGoModVersion(goModPath)
+
+			if gotOk != tt.wantOk {
+				t.Errorf("parseGoModVersion() ok = %v, want %v", gotOk, tt.wantOk)
+			}
+			if gotVersion != tt.wantVersion {
+				t.Errorf("parseGoModVersion() version = %q, want %q", gotVersion, tt.wantVersion)
+			}
+		})
+	}
+}
+
+func TestParseGoModVersion_FileNotFound(t *testing.T) {
+	version, ok := parseGoModVersion("/nonexistent/path/go.mod")
+	if ok {
+		t.Error("expected ok=false for nonexistent file")
+	}
+	if version != "" {
+		t.Errorf("expected empty version, got %q", version)
+	}
+}
+
+func TestReadIdiomaticVersion_GoMod(t *testing.T) {
+	// Create temp dir and go.mod
+	tmpDir := t.TempDir()
+	goModPath := filepath.Join(tmpDir, "go.mod")
+	content := `module example.com/myapp
+
+go 1.23.1
+`
+	if err := os.WriteFile(goModPath, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	// Change to temp dir to test readIdiomaticVersion
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	defer os.Chdir(oldWd)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to change directory: %v", err)
+	}
+
+	version, ok := readIdiomaticVersion("go", "go.mod")
+	if !ok {
+		t.Error("expected ok=true")
+	}
+	if version != "1.23.1" {
+		t.Errorf("expected version 1.23.1, got %q", version)
+	}
+}
+
+func TestIdiomaticFiles_GoVersionTakesPrecedence(t *testing.T) {
+	// Create temp dir with both .go-version and go.mod
+	tmpDir := t.TempDir()
+
+	// .go-version takes precedence
+	goVersionPath := filepath.Join(tmpDir, ".go-version")
+	if err := os.WriteFile(goVersionPath, []byte("1.20.0\n"), 0644); err != nil {
+		t.Fatalf("failed to write .go-version: %v", err)
+	}
+
+	goModPath := filepath.Join(tmpDir, "go.mod")
+	goModContent := `module example.com/myapp
+
+go 1.21.0
+`
+	if err := os.WriteFile(goModPath, []byte(goModContent), 0644); err != nil {
+		t.Fatalf("failed to write go.mod: %v", err)
+	}
+
+	// Change to temp dir
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	defer os.Chdir(oldWd)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to change directory: %v", err)
+	}
+
+	// Parse idiomatic files - should get .go-version (1.20.0), not go.mod (1.21.0)
+	infos := parseIdiomaticFiles()
+
+	var goVersion string
+	for _, info := range infos {
+		if info.tool == "go" {
+			goVersion = info.version
+			break
+		}
+	}
+
+	if goVersion != "1.20.0" {
+		t.Errorf("expected .go-version to take precedence (1.20.0), got %q", goVersion)
+	}
+}
+
+func TestIdiomaticFiles_GoModUsedAsFallback(t *testing.T) {
+	// Create temp dir with only go.mod (no .go-version)
+	tmpDir := t.TempDir()
+
+	goModPath := filepath.Join(tmpDir, "go.mod")
+	goModContent := `module example.com/myapp
+
+go 1.22.0
+`
+	if err := os.WriteFile(goModPath, []byte(goModContent), 0644); err != nil {
+		t.Fatalf("failed to write go.mod: %v", err)
+	}
+
+	// Change to temp dir
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	defer os.Chdir(oldWd)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to change directory: %v", err)
+	}
+
+	// Parse idiomatic files - should get go.mod version since no .go-version
+	infos := parseIdiomaticFiles()
+
+	var goVersion string
+	for _, info := range infos {
+		if info.tool == "go" {
+			goVersion = info.version
+			break
+		}
+	}
+
+	if goVersion != "1.22.0" {
+		t.Errorf("expected go.mod version (1.22.0) as fallback, got %q", goVersion)
+	}
+}
+
+func TestBuildAgentMiseConfig_GoFromGoMod(t *testing.T) {
+	// Create temp dir with only go.mod
+	tmpDir := t.TempDir()
+
+	goModPath := filepath.Join(tmpDir, "go.mod")
+	goModContent := `module example.com/myapp
+
+go 1.23.0
+`
+	if err := os.WriteFile(goModPath, []byte(goModContent), 0644); err != nil {
+		t.Fatalf("failed to write go.mod: %v", err)
+	}
+
+	// Change to temp dir
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	defer os.Chdir(oldWd)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to change directory: %v", err)
+	}
+
+	imgCfg := loadTestConfig(t)
+	spec := getToolSpec(t, imgCfg, "claude")
+
+	// Parse idiomatic files to get go version from go.mod
+	idiomaticInfos := parseIdiomaticFiles()
+
+	collection := collectResult{
+		idiomaticInfos: idiomaticInfos,
+	}
+
+	// Build with no user mise.toml
+	data, err := buildAgentMiseConfig(nil, collection, spec)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	result := string(data)
+
+	// Should contain go = "1.23.0"
+	if !strings.Contains(result, `go = "1.23.0"`) {
+		t.Errorf("expected go version from go.mod in output, got:\n%s", result)
+	}
+}
+
+func TestBuildAgentMiseConfig_GoFromGoMod_NotIncludedWhenMiseTomlHasGo(t *testing.T) {
+	// Create temp dir with go.mod
+	tmpDir := t.TempDir()
+
+	goModPath := filepath.Join(tmpDir, "go.mod")
+	goModContent := `module example.com/myapp
+
+go 1.23.0
+`
+	if err := os.WriteFile(goModPath, []byte(goModContent), 0644); err != nil {
+		t.Fatalf("failed to write go.mod: %v", err)
+	}
+
+	// Change to temp dir
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	defer os.Chdir(oldWd)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to change directory: %v", err)
+	}
+
+	imgCfg := loadTestConfig(t)
+	spec := getToolSpec(t, imgCfg, "claude")
+
+	// Parse idiomatic files to get go version from go.mod
+	idiomaticInfos := parseIdiomaticFiles()
+
+	collection := collectResult{
+		idiomaticInfos: idiomaticInfos,
+	}
+
+	// User's mise.toml already has go defined
+	userMise := []byte(`[tools]
+go = "1.21.0"
+`)
+
+	// Build with user mise.toml that has go
+	data, err := buildAgentMiseConfig(userMise, collection, spec)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	result := string(data)
+
+	// Should NOT contain any go version (user's mise.toml takes precedence)
+	if strings.Contains(result, "go =") {
+		t.Errorf("expected go to be excluded when user mise.toml has it, got:\n%s", result)
+	}
+}
