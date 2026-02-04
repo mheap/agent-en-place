@@ -1,4 +1,3 @@
 [tools]
 node = "latest"
 "npm:@google/gemini-cli" = "latest"
-python = "latest"
