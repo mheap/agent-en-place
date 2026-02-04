@@ -43,6 +43,11 @@ image:
   packages:
     - <apt-package>
 
+image_customizations:
+  packages:
+    - op: <add|remove>
+      value: <apt-package>
+
 mise:
   install:
     - <shell-command>
@@ -140,7 +145,43 @@ image:
     - build-essential
 ```
 
-**Note:** If you specify `packages`, it completely replaces the default list. Make sure to include essential packages like `curl`, `ca-certificates`, and `git`.
+**Note:** If you specify `packages`, it completely replaces the default list. Make sure to include essential packages like `curl`, `ca-certificates`, and `git`. If you only want to add or remove a few packages without replacing the entire list, use `image_customizations` instead.
+
+### `image_customizations`
+
+Allows you to customize the image packages using JSON patch-style operations. Unlike `image.packages` which replaces the entire list, `image_customizations` lets you incrementally add or remove packages from the defaults.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `packages` | list | List of customization operations |
+
+Each operation has:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `op` | string | Operation type: `add` or `remove` |
+| `value` | string | The package name to add or remove |
+
+**Example:**
+
+```yaml
+image_customizations:
+  packages:
+    - op: add
+      value: build-essential
+    - op: add
+      value: vim
+    - op: remove
+      value: gnupg
+```
+
+This would modify the default packages by adding `build-essential` and `vim`, and removing `gnupg`.
+
+**Notes:**
+- Customizations are applied after all config files are merged
+- Customizations from multiple config files accumulate (XDG config + project config + explicit config)
+- If you try to remove a package that doesn't exist, a warning is printed but the build continues
+- Operations are applied in order, so you can add and then remove the same package if needed
 
 ### `mise`
 
@@ -171,12 +212,14 @@ When multiple config files are loaded, they are merged with specific rules:
 | `agents` | Individual agents are added or overridden by name |
 | `image.base` | Replaced if specified |
 | `image.packages` | Replaced entirely if specified (not merged) |
+| `image_customizations` | Accumulated (all customizations are collected and applied in order) |
 | `mise.install` | Replaced entirely if specified (not merged) |
 
 This means you can:
 - Add a new agent without redefining all existing ones
 - Override a single tool's version without affecting others
 - Completely replace the package list if needed
+- Incrementally add or remove packages using customizations
 
 ## Examples
 
@@ -224,6 +267,24 @@ image:
     - gnupg
     - apt-transport-https
 ```
+
+### Adding or Removing Packages Without Replacing the List
+
+Use `image_customizations` to add or remove packages from the defaults without having to specify the entire list:
+
+```yaml
+# Add build tools and remove packages you don't need
+image_customizations:
+  packages:
+    - op: add
+      value: build-essential
+    - op: add
+      value: cmake
+    - op: remove
+      value: apt-transport-https
+```
+
+This is especially useful when you want to keep the default packages but need to add a few extras for your project.
 
 ### Adding System Dependencies for a Tool
 
