@@ -11,10 +11,11 @@ import (
 
 // ImageConfig represents the configuration file structure
 type ImageConfig struct {
-	Tools  map[string]ToolConfigEntry `yaml:"tools"`
-	Agents map[string]AgentConfig     `yaml:"agents"`
-	Image  ImageSettings              `yaml:"image"`
-	Mise   MiseSettings               `yaml:"mise"`
+	Tools               map[string]ToolConfigEntry `yaml:"tools"`
+	Agents              map[string]AgentConfig     `yaml:"agents"`
+	Image               ImageSettings              `yaml:"image"`
+	Mise                MiseSettings               `yaml:"mise"`
+	ImageCustomizations ImageCustomizations        `yaml:"image_customizations"`
 }
 
 // ToolConfigEntry defines a tool with version and dependencies
@@ -43,6 +44,17 @@ type ImageSettings struct {
 // MiseSettings defines mise installation commands
 type MiseSettings struct {
 	Install []string `yaml:"install"`
+}
+
+// ImageCustomization represents a single customization operation (JSON patch style)
+type ImageCustomization struct {
+	Op    string `yaml:"op"`    // "add" or "remove"
+	Value string `yaml:"value"` // The value to add or remove
+}
+
+// ImageCustomizations defines customization operations for the image
+type ImageCustomizations struct {
+	Packages []ImageCustomization `yaml:"packages"`
 }
 
 // loadDefaultConfig parses the embedded default config
@@ -97,6 +109,7 @@ func getXDGConfigPath() string {
 // 2. XDG config ($XDG_CONFIG_HOME/agent-en-place.yaml or ~/.config/agent-en-place.yaml)
 // 3. Project-local config (./.agent-en-place.yaml)
 // 4. Explicit config path (--config flag)
+// After merging, image_customizations are applied to modify packages
 func LoadMergedConfig(defaultConfigData []byte, configPath string) (*ImageConfig, error) {
 	base, err := loadDefaultConfig(defaultConfigData)
 	if err != nil {
@@ -136,6 +149,9 @@ func LoadMergedConfig(defaultConfigData []byte, configPath string) (*ImageConfig
 		base = mergeConfigs(base, explicitConfig)
 	}
 
+	// Apply image customizations after all configs are merged
+	base = applyImageCustomizations(base)
+
 	return base, nil
 }
 
@@ -145,12 +161,14 @@ func LoadMergedConfig(defaultConfigData []byte, configPath string) (*ImageConfig
 // - Image.Base: user replaces if set
 // - Image.Packages: user replaces entirely if set
 // - Mise.Install: user replaces entirely if set
+// - ImageCustomizations: user customizations are accumulated
 func mergeConfigs(base, user *ImageConfig) *ImageConfig {
 	result := &ImageConfig{
-		Tools:  make(map[string]ToolConfigEntry),
-		Agents: make(map[string]AgentConfig),
-		Image:  base.Image,
-		Mise:   base.Mise,
+		Tools:               make(map[string]ToolConfigEntry),
+		Agents:              make(map[string]AgentConfig),
+		Image:               base.Image,
+		Mise:                base.Mise,
+		ImageCustomizations: base.ImageCustomizations,
 	}
 
 	// Copy base tools
@@ -184,6 +202,14 @@ func mergeConfigs(base, user *ImageConfig) *ImageConfig {
 	// Replace mise install commands if user specified
 	if len(user.Mise.Install) > 0 {
 		result.Mise.Install = user.Mise.Install
+	}
+
+	// Accumulate image customizations from user config
+	if len(user.ImageCustomizations.Packages) > 0 {
+		result.ImageCustomizations.Packages = append(
+			result.ImageCustomizations.Packages,
+			user.ImageCustomizations.Packages...,
+		)
 	}
 
 	return result
@@ -292,4 +318,32 @@ func (c *ImageConfig) ResolveAdditionalPackages(agentName string) []string {
 	}
 
 	return packages
+}
+
+// applyImageCustomizations applies add/remove operations to image packages
+// This is called after all config files have been merged
+func applyImageCustomizations(cfg *ImageConfig) *ImageConfig {
+	for _, customization := range cfg.ImageCustomizations.Packages {
+		switch customization.Op {
+		case "add":
+			cfg.Image.Packages = append(cfg.Image.Packages, customization.Value)
+		case "remove":
+			found := false
+			newPackages := make([]string, 0, len(cfg.Image.Packages))
+			for _, pkg := range cfg.Image.Packages {
+				if pkg == customization.Value {
+					found = true
+				} else {
+					newPackages = append(newPackages, pkg)
+				}
+			}
+			cfg.Image.Packages = newPackages
+			if !found {
+				fmt.Fprintf(os.Stderr, "Warning: package %q not found for removal\n", customization.Value)
+			}
+		default:
+			fmt.Fprintf(os.Stderr, "Warning: unknown image customization operation %q\n", customization.Op)
+		}
+	}
+	return cfg
 }

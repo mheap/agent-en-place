@@ -1056,3 +1056,143 @@ go = "1.21.0"
 		t.Errorf("expected go to be excluded when user mise.toml has it, got:\n%s", result)
 	}
 }
+
+// TestApplyImageCustomizations_AddPackage tests adding a package via customization
+func TestApplyImageCustomizations_AddPackage(t *testing.T) {
+	cfg := &ImageConfig{
+		Image: ImageSettings{
+			Packages: []string{"curl", "git"},
+		},
+		ImageCustomizations: ImageCustomizations{
+			Packages: []ImageCustomization{
+				{Op: "add", Value: "vim"},
+			},
+		},
+	}
+
+	result := applyImageCustomizations(cfg)
+
+	expected := []string{"curl", "git", "vim"}
+	if !slicesEqual(result.Image.Packages, expected) {
+		t.Errorf("expected packages %v, got %v", expected, result.Image.Packages)
+	}
+}
+
+// TestApplyImageCustomizations_RemovePackage tests removing a package via customization
+func TestApplyImageCustomizations_RemovePackage(t *testing.T) {
+	cfg := &ImageConfig{
+		Image: ImageSettings{
+			Packages: []string{"curl", "git", "gnupg"},
+		},
+		ImageCustomizations: ImageCustomizations{
+			Packages: []ImageCustomization{
+				{Op: "remove", Value: "git"},
+			},
+		},
+	}
+
+	result := applyImageCustomizations(cfg)
+
+	expected := []string{"curl", "gnupg"}
+	if !slicesEqual(result.Image.Packages, expected) {
+		t.Errorf("expected packages %v, got %v", expected, result.Image.Packages)
+	}
+}
+
+// TestApplyImageCustomizations_AddAndRemove tests both add and remove operations together
+func TestApplyImageCustomizations_AddAndRemove(t *testing.T) {
+	cfg := &ImageConfig{
+		Image: ImageSettings{
+			Packages: []string{"curl", "git", "gnupg"},
+		},
+		ImageCustomizations: ImageCustomizations{
+			Packages: []ImageCustomization{
+				{Op: "add", Value: "build-essential"},
+				{Op: "remove", Value: "gnupg"},
+				{Op: "add", Value: "vim"},
+			},
+		},
+	}
+
+	result := applyImageCustomizations(cfg)
+
+	expected := []string{"curl", "git", "build-essential", "vim"}
+	if !slicesEqual(result.Image.Packages, expected) {
+		t.Errorf("expected packages %v, got %v", expected, result.Image.Packages)
+	}
+}
+
+// TestApplyImageCustomizations_NoCustomizations tests that no customizations leaves packages unchanged
+func TestApplyImageCustomizations_NoCustomizations(t *testing.T) {
+	cfg := &ImageConfig{
+		Image: ImageSettings{
+			Packages: []string{"curl", "git"},
+		},
+		ImageCustomizations: ImageCustomizations{},
+	}
+
+	result := applyImageCustomizations(cfg)
+
+	expected := []string{"curl", "git"}
+	if !slicesEqual(result.Image.Packages, expected) {
+		t.Errorf("expected packages %v, got %v", expected, result.Image.Packages)
+	}
+}
+
+// TestMergeConfigs_AccumulatesCustomizations tests that customizations are accumulated across config files
+func TestMergeConfigs_AccumulatesCustomizations(t *testing.T) {
+	base := &ImageConfig{
+		Tools:  make(map[string]ToolConfigEntry),
+		Agents: make(map[string]AgentConfig),
+		Image: ImageSettings{
+			Packages: []string{"curl", "git"},
+		},
+		ImageCustomizations: ImageCustomizations{
+			Packages: []ImageCustomization{
+				{Op: "add", Value: "vim"},
+			},
+		},
+	}
+
+	user := &ImageConfig{
+		Tools:  make(map[string]ToolConfigEntry),
+		Agents: make(map[string]AgentConfig),
+		ImageCustomizations: ImageCustomizations{
+			Packages: []ImageCustomization{
+				{Op: "add", Value: "nano"},
+				{Op: "remove", Value: "git"},
+			},
+		},
+	}
+
+	result := mergeConfigs(base, user)
+
+	// Should have all customizations accumulated
+	if len(result.ImageCustomizations.Packages) != 3 {
+		t.Errorf("expected 3 customizations, got %d", len(result.ImageCustomizations.Packages))
+	}
+
+	// Check that all customizations are present in order
+	if result.ImageCustomizations.Packages[0].Op != "add" || result.ImageCustomizations.Packages[0].Value != "vim" {
+		t.Errorf("first customization should be add vim, got %+v", result.ImageCustomizations.Packages[0])
+	}
+	if result.ImageCustomizations.Packages[1].Op != "add" || result.ImageCustomizations.Packages[1].Value != "nano" {
+		t.Errorf("second customization should be add nano, got %+v", result.ImageCustomizations.Packages[1])
+	}
+	if result.ImageCustomizations.Packages[2].Op != "remove" || result.ImageCustomizations.Packages[2].Value != "git" {
+		t.Errorf("third customization should be remove git, got %+v", result.ImageCustomizations.Packages[2])
+	}
+}
+
+// slicesEqual compares two string slices for equality
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
