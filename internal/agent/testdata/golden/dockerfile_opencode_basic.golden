@@ -7,6 +7,7 @@ RUN rm -rf /var/lib/apt/lists/*
 RUN groupadd -r agent && useradd -m -r -u 1000 -g agent -s /bin/bash agent
 ENV HOME=/home/agent
 ENV PATH="/home/agent/.local/share/mise/shims:/home/agent/.local/bin:${PATH}"
+ENV MISE_RUBY_COMPILE="false"
 
 RUN mkdir -p /home/agent/.config/mise
 LABEL com.mheap.agent-en-place.opencode="latest"
