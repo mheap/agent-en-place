@@ -286,6 +286,33 @@ This is useful when you want a minimal, deterministic container with only the to
 
 Note: Setting `AGENT_EN_PLACE_SPECIFIED_TOOLS_ONLY=1` without `AGENT_EN_PLACE_TOOLS` has no effect (a warning is printed to stderr).
 
+### Mise Environment Variables
+
+Mise environment variables can be configured in two ways, and both sources are merged (host env vars take precedence over config values for the same key).
+
+**Via config file** (`mise.env`):
+
+```yaml
+mise:
+  env:
+    ruby_compile: false
+```
+
+Keys are automatically uppercased and prefixed with `MISE_` (e.g., `ruby_compile` becomes `MISE_RUBY_COMPILE`). Boolean values `true`/`false` are converted to strings.
+
+**Via host environment**:
+
+Any environment variables starting with `MISE_` that are set on your host are automatically forwarded into the Docker image.
+
+```bash
+export MISE_RUBY_COMPILE=false
+agent-en-place claude
+```
+
+Both sources produce `ENV` directives in the Dockerfile, available during `mise install` (build time) and at container runtime.
+
+**Note**: `MISE_ENV` and `MISE_SHELL` are excluded from forwarding. `MISE_ENV` is set at container runtime via `docker run -e MISE_ENV=agent`, and `MISE_SHELL` is host-specific and not relevant inside the container.
+
 ## License
 
 MIT License

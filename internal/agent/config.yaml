@@ -64,3 +64,5 @@ mise:
     - echo "deb [signed-by=/etc/apt/keyrings/mise-archive-keyring.pub arch=$arch] https://mise.jdx.dev/deb stable main" | tee /etc/apt/sources.list.d/mise.list
     - apt-get update
     - apt-get install -y mise
+  env:
+    ruby_compile: false

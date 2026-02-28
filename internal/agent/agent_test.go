@@ -93,7 +93,7 @@ func TestDockerfile_Basic(t *testing.T) {
 			collection := buildDefaultCollection(tt.tool, spec)
 
 			// Basic case: no .tool-versions, no mise.toml
-			got := buildDockerfile(false, false, collection, spec, imgCfg, tt.tool)
+			got := buildDockerfile(false, false, collection, spec, imgCfg, tt.tool, nil)
 
 			goldenTest(t, "dockerfile_"+tt.name+"_basic.golden", got)
 		})
@@ -117,7 +117,7 @@ func TestDockerfile_Claude_WithToolVersions(t *testing.T) {
 	}
 
 	// hasTool=true, hasMise=false
-	got := buildDockerfile(true, false, collection, spec, imgCfg, "claude")
+	got := buildDockerfile(true, false, collection, spec, imgCfg, "claude", nil)
 
 	goldenTest(t, "dockerfile_claude_with_tool_versions.golden", got)
 }
@@ -141,7 +141,7 @@ func TestDockerfile_Claude_WithMiseToml(t *testing.T) {
 	}
 
 	// hasTool=false, hasMise=true
-	got := buildDockerfile(false, true, collection, spec, imgCfg, "claude")
+	got := buildDockerfile(false, true, collection, spec, imgCfg, "claude", nil)
 
 	goldenTest(t, "dockerfile_claude_with_mise_toml.golden", got)
 }
@@ -163,7 +163,7 @@ func TestDockerfile_Claude_WithNodeVersion(t *testing.T) {
 	}
 
 	// hasTool=false, hasMise=false (node version comes from .node-version file)
-	got := buildDockerfile(false, false, collection, spec, imgCfg, "claude")
+	got := buildDockerfile(false, false, collection, spec, imgCfg, "claude", nil)
 
 	goldenTest(t, "dockerfile_claude_with_node_version.golden", got)
 }
@@ -187,7 +187,7 @@ func TestDockerfile_Claude_WithBothConfigs(t *testing.T) {
 	}
 
 	// hasTool=true, hasMise=true
-	got := buildDockerfile(true, true, collection, spec, imgCfg, "claude")
+	got := buildDockerfile(true, true, collection, spec, imgCfg, "claude", nil)
 
 	goldenTest(t, "dockerfile_claude_with_both_configs.golden", got)
 }
@@ -209,7 +209,7 @@ func TestDockerfile_Claude_WithoutNode(t *testing.T) {
 	}
 
 	// hasTool=false, hasMise=false
-	got := buildDockerfile(false, false, collection, spec, imgCfg, "claude")
+	got := buildDockerfile(false, false, collection, spec, imgCfg, "claude", nil)
 
 	goldenTest(t, "dockerfile_claude_without_node.golden", got)
 }
@@ -1808,5 +1808,273 @@ func TestCollectToolSpecs_EnvToolOverridesInMiseAgentConfig(t *testing.T) {
 	}
 	if nodeSpec.version != "20" {
 		t.Errorf("expected node version 20 (from env), got %s", nodeSpec.version)
+	}
+}
+
+func TestCollectMiseEnvVars(t *testing.T) {
+	tests := []struct {
+		name    string
+		environ []string
+		want    [][2]string
+	}{
+		{
+			name:    "empty environment",
+			environ: nil,
+			want:    nil,
+		},
+		{
+			name:    "no MISE_ vars",
+			environ: []string{"HOME=/home/user", "PATH=/usr/bin", "AGENT_EN_PLACE_TOOLS=node@20"},
+			want:    nil,
+		},
+		{
+			name:    "single MISE_ var",
+			environ: []string{"MISE_NODE_DEFAULT_PACKAGES_FILE=/path/to/file"},
+			want:    [][2]string{{"MISE_NODE_DEFAULT_PACKAGES_FILE", "/path/to/file"}},
+		},
+		{
+			name: "multiple MISE_ vars sorted",
+			environ: []string{
+				"MISE_PYTHON_DEFAULT_PACKAGES_FILE=/path/python",
+				"HOME=/home/user",
+				"MISE_NODE_DEFAULT_PACKAGES_FILE=/path/node",
+				"MISE_LEGACY_VERSION_FILE=1",
+			},
+			want: [][2]string{
+				{"MISE_LEGACY_VERSION_FILE", "1"},
+				{"MISE_NODE_DEFAULT_PACKAGES_FILE", "/path/node"},
+				{"MISE_PYTHON_DEFAULT_PACKAGES_FILE", "/path/python"},
+			},
+		},
+		{
+			name:    "MISE_ENV is excluded",
+			environ: []string{"MISE_ENV=agent", "MISE_NODE_DEFAULT_PACKAGES_FILE=/path"},
+			want:    [][2]string{{"MISE_NODE_DEFAULT_PACKAGES_FILE", "/path"}},
+		},
+		{
+			name:    "MISE_ENV alone is excluded",
+			environ: []string{"MISE_ENV=production"},
+			want:    nil,
+		},
+		{
+			name:    "MISE_SHELL is excluded",
+			environ: []string{"MISE_SHELL=zsh", "MISE_NODE_DEFAULT_PACKAGES_FILE=/path"},
+			want:    [][2]string{{"MISE_NODE_DEFAULT_PACKAGES_FILE", "/path"}},
+		},
+		{
+			name:    "MISE_ENV and MISE_SHELL both excluded",
+			environ: []string{"MISE_ENV=agent", "MISE_SHELL=bash", "MISE_LEGACY_VERSION_FILE=1"},
+			want:    [][2]string{{"MISE_LEGACY_VERSION_FILE", "1"}},
+		},
+		{
+			name:    "value with equals sign",
+			environ: []string{"MISE_SOME_SETTING=key=value"},
+			want:    [][2]string{{"MISE_SOME_SETTING", "key=value"}},
+		},
+		{
+			name:    "empty value",
+			environ: []string{"MISE_SOME_FLAG="},
+			want:    [][2]string{{"MISE_SOME_FLAG", ""}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := collectMiseEnvVars(tt.environ)
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("collectMiseEnvVars() mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestDockerfile_Claude_WithMiseEnvVars(t *testing.T) {
+	imgCfg := loadTestConfig(t)
+	spec := getToolSpec(t, imgCfg, "claude")
+	collection := buildDefaultCollection("claude", spec)
+
+	environ := []string{
+		"HOME=/home/user",
+		"MISE_PYTHON_DEFAULT_PACKAGES_FILE=/home/user/.default-python-packages",
+		"MISE_ENV=agent",
+		"MISE_NODE_DEFAULT_PACKAGES_FILE=/home/user/.default-npm-packages",
+		"PATH=/usr/bin",
+	}
+
+	got := buildDockerfile(false, false, collection, spec, imgCfg, "claude", environ)
+
+	goldenTest(t, "dockerfile_claude_with_mise_env_vars.golden", got)
+}
+
+func TestConfigMiseEnvVars(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]any
+		want [][2]string
+	}{
+		{
+			name: "nil map",
+			env:  nil,
+			want: nil,
+		},
+		{
+			name: "empty map",
+			env:  map[string]any{},
+			want: nil,
+		},
+		{
+			name: "string value",
+			env:  map[string]any{"node_default_packages_file": "/path/to/file"},
+			want: [][2]string{{"MISE_NODE_DEFAULT_PACKAGES_FILE", "/path/to/file"}},
+		},
+		{
+			name: "boolean false",
+			env:  map[string]any{"ruby_compile": false},
+			want: [][2]string{{"MISE_RUBY_COMPILE", "false"}},
+		},
+		{
+			name: "boolean true",
+			env:  map[string]any{"experimental": true},
+			want: [][2]string{{"MISE_EXPERIMENTAL", "true"}},
+		},
+		{
+			name: "integer value",
+			env:  map[string]any{"jobs": 4},
+			want: [][2]string{{"MISE_JOBS", "4"}},
+		},
+		{
+			name: "multiple values sorted",
+			env: map[string]any{
+				"ruby_compile": false,
+				"experimental": true,
+				"jobs":         4,
+				"color":        "always",
+			},
+			want: [][2]string{
+				{"MISE_COLOR", "always"},
+				{"MISE_EXPERIMENTAL", "true"},
+				{"MISE_JOBS", "4"},
+				{"MISE_RUBY_COMPILE", "false"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := configMiseEnvVars(tt.env)
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("configMiseEnvVars() mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestMergeMiseEnvVars(t *testing.T) {
+	tests := []struct {
+		name       string
+		configVars [][2]string
+		hostVars   [][2]string
+		want       [][2]string
+	}{
+		{
+			name:       "both nil",
+			configVars: nil,
+			hostVars:   nil,
+			want:       nil,
+		},
+		{
+			name:       "config only",
+			configVars: [][2]string{{"MISE_RUBY_COMPILE", "false"}},
+			hostVars:   nil,
+			want:       [][2]string{{"MISE_RUBY_COMPILE", "false"}},
+		},
+		{
+			name:       "host only",
+			configVars: nil,
+			hostVars:   [][2]string{{"MISE_JOBS", "8"}},
+			want:       [][2]string{{"MISE_JOBS", "8"}},
+		},
+		{
+			name:       "host overrides config",
+			configVars: [][2]string{{"MISE_RUBY_COMPILE", "false"}},
+			hostVars:   [][2]string{{"MISE_RUBY_COMPILE", "true"}},
+			want:       [][2]string{{"MISE_RUBY_COMPILE", "true"}},
+		},
+		{
+			name: "merge disjoint sets sorted",
+			configVars: [][2]string{
+				{"MISE_RUBY_COMPILE", "false"},
+			},
+			hostVars: [][2]string{
+				{"MISE_JOBS", "8"},
+			},
+			want: [][2]string{
+				{"MISE_JOBS", "8"},
+				{"MISE_RUBY_COMPILE", "false"},
+			},
+		},
+		{
+			name: "host overrides one config key among many",
+			configVars: [][2]string{
+				{"MISE_COLOR", "always"},
+				{"MISE_JOBS", "4"},
+				{"MISE_RUBY_COMPILE", "false"},
+			},
+			hostVars: [][2]string{
+				{"MISE_JOBS", "8"},
+			},
+			want: [][2]string{
+				{"MISE_COLOR", "always"},
+				{"MISE_JOBS", "8"},
+				{"MISE_RUBY_COMPILE", "false"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mergeMiseEnvVars(tt.configVars, tt.hostVars)
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("mergeMiseEnvVars() mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestMergeConfigs_MiseEnv(t *testing.T) {
+	base := &ImageConfig{
+		Tools:  make(map[string]ToolConfigEntry),
+		Agents: make(map[string]AgentConfig),
+		Mise: MiseSettings{
+			Env: map[string]any{
+				"ruby_compile": false,
+				"jobs":         4,
+			},
+		},
+	}
+	user := &ImageConfig{
+		Tools:  make(map[string]ToolConfigEntry),
+		Agents: make(map[string]AgentConfig),
+		Mise: MiseSettings{
+			Env: map[string]any{
+				"jobs":         8,
+				"experimental": true,
+			},
+		},
+	}
+
+	result := mergeConfigs(base, user)
+
+	if len(result.Mise.Env) != 3 {
+		t.Fatalf("expected 3 env vars, got %d: %v", len(result.Mise.Env), result.Mise.Env)
+	}
+	if result.Mise.Env["ruby_compile"] != false {
+		t.Errorf("expected ruby_compile=false, got %v", result.Mise.Env["ruby_compile"])
+	}
+	if result.Mise.Env["jobs"] != 8 {
+		t.Errorf("expected jobs=8 (user override), got %v", result.Mise.Env["jobs"])
+	}
+	if result.Mise.Env["experimental"] != true {
+		t.Errorf("expected experimental=true, got %v", result.Mise.Env["experimental"])
 	}
 }
