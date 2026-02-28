@@ -1399,3 +1399,414 @@ python = "3.11.0"
 		}
 	}
 }
+
+// --- Tests for environment variable tool overrides ---
+
+func TestSplitToolVersion_Simple(t *testing.T) {
+	tests := []struct {
+		input       string
+		wantName    string
+		wantVersion string
+	}{
+		{"node@latest", "node", "latest"},
+		{"python@3.12", "python", "3.12"},
+		{"node@20.10.0", "node", "20.10.0"},
+		{"npm:trello-cli@1.5.0", "npm:trello-cli", "1.5.0"},
+		{"npm:@my-org/some-package@1.2.3", "npm:@my-org/some-package", "1.2.3"},
+		{"npm:@anthropic-ai/claude-code@latest", "npm:@anthropic-ai/claude-code", "latest"},
+		// No version -> defaults to latest
+		{"node", "node", "latest"},
+		{"npm:trello-cli", "npm:trello-cli", "latest"},
+		// Scoped npm package without version -> entire string is the name
+		{"npm:@my-org/some-package", "npm:@my-org/some-package", "latest"},
+		// Trailing @ -> defaults to latest
+		{"node@", "node", "latest"},
+		// @ at the beginning (bare scoped package, unusual but handled)
+		{"@org/pkg", "@org/pkg", "latest"},
+		{"@org/pkg@2.0.0", "@org/pkg", "2.0.0"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			name, version := splitToolVersion(tt.input)
+			if name != tt.wantName {
+				t.Errorf("splitToolVersion(%q) name = %q, want %q", tt.input, name, tt.wantName)
+			}
+			if version != tt.wantVersion {
+				t.Errorf("splitToolVersion(%q) version = %q, want %q", tt.input, version, tt.wantVersion)
+			}
+		})
+	}
+}
+
+func TestParseEnvTools_NotSet(t *testing.T) {
+	t.Setenv("AGENT_EN_PLACE_TOOLS", "")
+	specs := parseEnvTools()
+	if specs != nil {
+		t.Errorf("expected nil when env var is not set, got %v", specs)
+	}
+}
+
+func TestParseEnvTools_Basic(t *testing.T) {
+	t.Setenv("AGENT_EN_PLACE_TOOLS", "node@latest,python@3.12")
+	specs := parseEnvTools()
+
+	if len(specs) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(specs))
+	}
+
+	if specs[0].name != "node" || specs[0].version != "latest" {
+		t.Errorf("expected node@latest, got %s@%s", specs[0].name, specs[0].version)
+	}
+	if specs[1].name != "python" || specs[1].version != "3.12" {
+		t.Errorf("expected python@3.12, got %s@%s", specs[1].name, specs[1].version)
+	}
+
+	for _, s := range specs {
+		if s.source != sourceEnvVar {
+			t.Errorf("expected source %q, got %q", sourceEnvVar, s.source)
+		}
+	}
+}
+
+func TestParseEnvTools_NpmScopedPackage(t *testing.T) {
+	t.Setenv("AGENT_EN_PLACE_TOOLS", "npm:@my-org/some-package@1.2.3")
+	specs := parseEnvTools()
+
+	if len(specs) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(specs))
+	}
+
+	if specs[0].name != "npm:@my-org/some-package" {
+		t.Errorf("expected name npm:@my-org/some-package, got %s", specs[0].name)
+	}
+	if specs[0].version != "1.2.3" {
+		t.Errorf("expected version 1.2.3, got %s", specs[0].version)
+	}
+}
+
+func TestParseEnvTools_NoVersion(t *testing.T) {
+	t.Setenv("AGENT_EN_PLACE_TOOLS", "node,python")
+	specs := parseEnvTools()
+
+	if len(specs) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(specs))
+	}
+
+	for _, s := range specs {
+		if s.version != "latest" {
+			t.Errorf("expected version latest for %s, got %s", s.name, s.version)
+		}
+	}
+}
+
+func TestParseEnvTools_SkipsEmpty(t *testing.T) {
+	t.Setenv("AGENT_EN_PLACE_TOOLS", "node@latest,,python@3.12, ,")
+	specs := parseEnvTools()
+
+	if len(specs) != 2 {
+		t.Fatalf("expected 2 tools (skipping empty entries), got %d", len(specs))
+	}
+
+	if specs[0].name != "node" {
+		t.Errorf("expected first tool to be node, got %s", specs[0].name)
+	}
+	if specs[1].name != "python" {
+		t.Errorf("expected second tool to be python, got %s", specs[1].name)
+	}
+}
+
+func TestParseEnvTools_WhitespaceTrimmed(t *testing.T) {
+	t.Setenv("AGENT_EN_PLACE_TOOLS", " node@latest , python@3.12 ")
+	specs := parseEnvTools()
+
+	if len(specs) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(specs))
+	}
+
+	if specs[0].name != "node" {
+		t.Errorf("expected name 'node', got %q", specs[0].name)
+	}
+	if specs[1].name != "python" {
+		t.Errorf("expected name 'python', got %q", specs[1].name)
+	}
+}
+
+func TestCollectToolSpecs_EnvOverridesUserTools(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	defer os.Chdir(oldWd)
+	os.Chdir(tmpDir)
+
+	// Set env var with node@20 — this should override mise.toml's node@18
+	t.Setenv("AGENT_EN_PLACE_TOOLS", "node@20")
+	t.Setenv("AGENT_EN_PLACE_SPECIFIED_TOOLS_ONLY", "")
+
+	imgCfg := loadTestConfig(t)
+	spec := getToolSpec(t, imgCfg, "claude")
+
+	// Simulate a mise.toml with node@18
+	miseFile := &fileSpec{
+		path: "mise.toml",
+		data: []byte("[tools]\nnode = \"18\"\n"),
+	}
+
+	collection := collectToolSpecs(nil, miseFile, spec, imgCfg, "claude", false)
+
+	// Find node in the deduped specs — should have version "20" from env var
+	var nodeSpec *toolDescriptor
+	for i := range collection.specs {
+		if collection.specs[i].name == "node" {
+			nodeSpec = &collection.specs[i]
+			break
+		}
+	}
+
+	if nodeSpec == nil {
+		t.Fatal("expected node in collected specs")
+	}
+	if nodeSpec.version != "20" {
+		t.Errorf("expected env var to override node version to 20, got %s", nodeSpec.version)
+	}
+}
+
+func TestCollectToolSpecs_EnvMergesWithFileTools(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	defer os.Chdir(oldWd)
+	os.Chdir(tmpDir)
+
+	// Set env var with ruby — mise.toml has node
+	t.Setenv("AGENT_EN_PLACE_TOOLS", "ruby@3.2")
+	t.Setenv("AGENT_EN_PLACE_SPECIFIED_TOOLS_ONLY", "")
+
+	imgCfg := loadTestConfig(t)
+	spec := getToolSpec(t, imgCfg, "claude")
+
+	// Simulate a mise.toml with node
+	miseFile := &fileSpec{
+		path: "mise.toml",
+		data: []byte("[tools]\nnode = \"18\"\n"),
+	}
+
+	collection := collectToolSpecs(nil, miseFile, spec, imgCfg, "claude", false)
+
+	// Both ruby (from env) and node (from mise.toml) should be present
+	toolNames := make(map[string]string)
+	for _, s := range collection.specs {
+		toolNames[s.name] = s.version
+	}
+
+	if v, ok := toolNames["ruby"]; !ok || v != "3.2" {
+		t.Errorf("expected ruby@3.2 from env var, got %v (present=%v)", v, ok)
+	}
+	if v, ok := toolNames["node"]; !ok || v != "18" {
+		t.Errorf("expected node@18 from mise.toml, got %v (present=%v)", v, ok)
+	}
+}
+
+func TestCollectToolSpecs_SpecifiedToolsOnly(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	defer os.Chdir(oldWd)
+	os.Chdir(tmpDir)
+
+	t.Setenv("AGENT_EN_PLACE_TOOLS", "python@3.12")
+	t.Setenv("AGENT_EN_PLACE_SPECIFIED_TOOLS_ONLY", "1")
+
+	imgCfg := loadTestConfig(t)
+	spec := getToolSpec(t, imgCfg, "claude")
+
+	// Even though these files are passed, they should be skipped in specifiedOnly mode
+	miseFile := &fileSpec{
+		path: "mise.toml",
+		data: []byte("[tools]\nnode = \"18\"\nruby = \"3.2\"\n"),
+	}
+	toolFile := &fileSpec{
+		path: ".tool-versions",
+		data: []byte("go 1.21\n"),
+	}
+
+	collection := collectToolSpecs(toolFile, miseFile, spec, imgCfg, "claude", false)
+
+	toolNames := make(map[string]bool)
+	for _, s := range collection.specs {
+		toolNames[s.name] = true
+		// Also index by sanitized name for ensureDefaultTool-added tools
+		toolNames[sanitizeTagComponent(s.name)] = true
+	}
+
+	// python should be present (from env var)
+	if !toolNames["python"] {
+		t.Error("expected python from env var to be present")
+	}
+
+	// Agent's own tool should be present (ensureDefaultTool)
+	agentToolName := sanitizeTagComponent(spec.MiseToolName)
+	if !toolNames[agentToolName] {
+		t.Errorf("expected agent tool %s to be present", agentToolName)
+	}
+
+	// node, ruby, go from file sources should NOT be present
+	if toolNames["node"] {
+		t.Error("expected node from mise.toml to be skipped in specifiedOnly mode")
+	}
+	if toolNames["ruby"] {
+		t.Error("expected ruby from mise.toml to be skipped in specifiedOnly mode")
+	}
+	if toolNames["go"] {
+		t.Error("expected go from .tool-versions to be skipped in specifiedOnly mode")
+	}
+
+	// No idiomatic paths should be collected
+	if len(collection.idiomaticPaths) != 0 {
+		t.Errorf("expected no idiomatic paths in specifiedOnly mode, got %v", collection.idiomaticPaths)
+	}
+}
+
+func TestCollectToolSpecs_SpecifiedToolsOnlyWithoutToolsEnv(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	defer os.Chdir(oldWd)
+	os.Chdir(tmpDir)
+
+	// Set SPECIFIED_TOOLS_ONLY without TOOLS — should warn and behave as normal
+	t.Setenv("AGENT_EN_PLACE_TOOLS", "")
+	t.Setenv("AGENT_EN_PLACE_SPECIFIED_TOOLS_ONLY", "1")
+
+	imgCfg := loadTestConfig(t)
+	spec := getToolSpec(t, imgCfg, "claude")
+
+	// Provide a mise.toml with tools — these should still be collected
+	// since SPECIFIED_TOOLS_ONLY is ignored without TOOLS
+	miseFile := &fileSpec{
+		path: "mise.toml",
+		data: []byte("[tools]\nnode = \"18\"\n"),
+	}
+
+	collection := collectToolSpecs(nil, miseFile, spec, imgCfg, "claude", false)
+
+	// node should be present because specifiedOnly was ignored
+	toolNames := make(map[string]bool)
+	for _, s := range collection.specs {
+		toolNames[s.name] = true
+	}
+
+	if !toolNames["node"] {
+		t.Error("expected node from mise.toml to be present when SPECIFIED_TOOLS_ONLY is ignored (no TOOLS set)")
+	}
+}
+
+func TestCollectToolSpecs_EnvToolsTriggersTransitiveDeps(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	defer os.Chdir(oldWd)
+	os.Chdir(tmpDir)
+
+	// Specify node via env var — this should trigger python as a transitive dep
+	t.Setenv("AGENT_EN_PLACE_TOOLS", "node@20")
+	t.Setenv("AGENT_EN_PLACE_SPECIFIED_TOOLS_ONLY", "")
+
+	imgCfg := loadTestConfig(t)
+	spec := getToolSpec(t, imgCfg, "claude")
+
+	collection := collectToolSpecs(nil, nil, spec, imgCfg, "claude", false)
+
+	toolNames := make(map[string]bool)
+	for _, s := range collection.specs {
+		toolNames[s.name] = true
+	}
+
+	if !toolNames["node"] {
+		t.Error("expected node to be present")
+	}
+	if !toolNames["python"] {
+		t.Error("expected python to be present as transitive dependency of user-specified node (via env var)")
+	}
+}
+
+func TestCollectToolSpecs_EnvToolsAreInUserToolsSet(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	defer os.Chdir(oldWd)
+	os.Chdir(tmpDir)
+
+	t.Setenv("AGENT_EN_PLACE_TOOLS", "node@20")
+	t.Setenv("AGENT_EN_PLACE_SPECIFIED_TOOLS_ONLY", "")
+
+	imgCfg := loadTestConfig(t)
+	spec := getToolSpec(t, imgCfg, "claude")
+
+	collection := collectToolSpecs(nil, nil, spec, imgCfg, "claude", false)
+
+	// node should be in userTools (for transitive dep resolution and additional packages)
+	if !collection.userTools["node"] {
+		t.Error("expected env var tool 'node' to be in userTools set")
+	}
+}
+
+func TestCollectToolSpecs_EnvToolInMiseAgentConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	defer os.Chdir(oldWd)
+	os.Chdir(tmpDir)
+
+	t.Setenv("AGENT_EN_PLACE_TOOLS", "ruby@3.2")
+	t.Setenv("AGENT_EN_PLACE_SPECIFIED_TOOLS_ONLY", "")
+
+	imgCfg := loadTestConfig(t)
+	spec := getToolSpec(t, imgCfg, "claude")
+
+	collection := collectToolSpecs(nil, nil, spec, imgCfg, "claude", false)
+
+	// Build mise.agent.toml — ruby should appear since there's no user mise.toml
+	data, err := buildAgentMiseConfig(nil, collection, spec)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	result := string(data)
+	if !strings.Contains(result, `ruby = "3.2"`) {
+		t.Errorf("expected ruby@3.2 in mise.agent.toml, got:\n%s", result)
+	}
+}
+
+func TestCollectToolSpecs_EnvToolOverridesInMiseAgentConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	defer os.Chdir(oldWd)
+	os.Chdir(tmpDir)
+
+	// Env var says node@20, user mise.toml says node@18
+	t.Setenv("AGENT_EN_PLACE_TOOLS", "node@20")
+	t.Setenv("AGENT_EN_PLACE_SPECIFIED_TOOLS_ONLY", "")
+
+	imgCfg := loadTestConfig(t)
+	spec := getToolSpec(t, imgCfg, "claude")
+
+	userMise := []byte("[tools]\nnode = \"18\"\n")
+	miseFile := &fileSpec{
+		path: "mise.toml",
+		data: userMise,
+	}
+
+	collection := collectToolSpecs(nil, miseFile, spec, imgCfg, "claude", false)
+
+	// Env var tool (node@20) is in idiomaticInfos but the user's mise.toml
+	// also has node. Since user mise.toml has node, it should be filtered out
+	// of mise.agent.toml — the user's mise.toml takes ownership of that key.
+	// BUT the collected spec should have node@20 (env wins in dedup).
+	var nodeSpec *toolDescriptor
+	for i := range collection.specs {
+		if collection.specs[i].name == "node" {
+			nodeSpec = &collection.specs[i]
+			break
+		}
+	}
+	if nodeSpec == nil {
+		t.Fatal("expected node in collected specs")
+	}
+	if nodeSpec.version != "20" {
+		t.Errorf("expected node version 20 (from env), got %s", nodeSpec.version)
+	}
+}

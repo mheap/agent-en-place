@@ -87,6 +87,15 @@ func Run(cfg Config) error {
 		return fmt.Errorf("failed to read mise.toml: %w", err)
 	}
 
+	// When AGENT_EN_PLACE_SPECIFIED_TOOLS_ONLY=1 is set with AGENT_EN_PLACE_TOOLS,
+	// skip file-based tool sources entirely. We nil them out so they aren't
+	// copied into the Docker image or parsed for tools.
+	specifiedOnly := os.Getenv("AGENT_EN_PLACE_SPECIFIED_TOOLS_ONLY") == "1" && os.Getenv("AGENT_EN_PLACE_TOOLS") != ""
+	if specifiedOnly {
+		toolFile = nil
+		miseFile = nil
+	}
+
 	collection := collectToolSpecs(toolFile, miseFile, spec, imgCfg, cfg.Tool, cfg.Debug)
 	if cfg.DockerfileOnly {
 		fmt.Print(buildDockerfile(toolFile != nil, miseFile != nil, collection, spec, imgCfg, cfg.Tool))
@@ -347,6 +356,7 @@ const (
 	sourceUser      toolSource = "user"      // .tool-versions, mise.toml
 	sourceIdiomatic toolSource = "idiomatic" // .node-version, .python-version, go.mod, etc.
 	sourceConfig    toolSource = "config"    // agent dependency resolution from config.yaml
+	sourceEnvVar    toolSource = "env"       // AGENT_EN_PLACE_TOOLS environment variable
 )
 
 type toolDescriptor struct {
@@ -372,48 +382,83 @@ type idiomaticInfo struct {
 }
 
 func collectToolSpecs(toolFile, miseFile *fileSpec, spec ToolSpec, imgCfg *ImageConfig, agentName string, debug bool) collectResult {
-	specs := parseToolVersions(toolFile)
-	specs = append(specs, parseMiseToml(miseFile)...)
-	idiomatic := parseIdiomaticFiles()
-	for _, info := range idiomatic {
-		if info.version == "" {
-			continue
+	envTools := parseEnvTools()
+	specifiedOnly := os.Getenv("AGENT_EN_PLACE_SPECIFIED_TOOLS_ONLY") == "1"
+
+	// Warn if SPECIFIED_TOOLS_ONLY is set without TOOLS
+	if specifiedOnly && len(envTools) == 0 {
+		fmt.Fprintf(os.Stderr, "Warning: AGENT_EN_PLACE_SPECIFIED_TOOLS_ONLY requires AGENT_EN_PLACE_TOOLS to be set, ignoring\n")
+		specifiedOnly = false
+	}
+
+	// Start with env var tools (highest priority, first-wins dedup)
+	specs := append([]toolDescriptor{}, envTools...)
+
+	var idiomatic []idiomaticInfo
+	if !specifiedOnly {
+		specs = append(specs, parseToolVersions(toolFile)...)
+		specs = append(specs, parseMiseToml(miseFile)...)
+		idiomatic = parseIdiomaticFiles()
+		for _, info := range idiomatic {
+			if info.version == "" {
+				continue
+			}
+			specs = append(specs, toolDescriptor{name: info.tool, version: info.version, source: sourceIdiomatic})
 		}
-		specs = append(specs, toolDescriptor{name: info.tool, version: info.version, source: sourceIdiomatic})
 	}
 
 	// Build set of user-specified tools (for conditional transitive dep resolution)
+	// Env var tools count as user-specified for transitive dep purposes
 	userTools := make(map[string]bool)
 	for _, s := range specs {
-		if s.source == sourceUser || s.source == sourceIdiomatic {
+		if s.source == sourceUser || s.source == sourceIdiomatic || s.source == sourceEnvVar {
 			userTools[sanitizeTagComponent(s.name)] = true
 		}
 	}
 
-	// Add tools from config's dependency resolution
-	// These come after mise.toml/.tool-versions so they have lower priority
-	// Pass userTools so transitive deps are only resolved for user-specified tools
-	configTools := imgCfg.ResolveToolDeps(agentName, userTools, debug)
-	specs = append(specs, configTools...)
+	if !specifiedOnly {
+		// Add tools from config's dependency resolution
+		// These come after mise.toml/.tool-versions so they have lower priority
+		// Pass userTools so transitive deps are only resolved for user-specified tools
+		configTools := imgCfg.ResolveToolDeps(agentName, userTools, debug)
+		specs = append(specs, configTools...)
+	}
 
 	deduped := dedupeToolSpecs(specs)
 	deduped = ensureDefaultTool(deduped, spec)
 
-	// Build idiomaticInfos: start with idiomatic files, then add config tool dependencies
-	infos := append([]idiomaticInfo{}, idiomatic...)
-	for _, dep := range configTools {
+	// Build idiomaticInfos: start with env var tools, then idiomatic files, then config tool dependencies
+	var infos []idiomaticInfo
+	for _, envTool := range envTools {
 		infos = append(infos, idiomaticInfo{
-			tool:      dep.name,
-			version:   dep.version,
-			configKey: dep.name,
-			source:    sourceConfig,
+			tool:      envTool.name,
+			version:   envTool.version,
+			configKey: envTool.name,
+			source:    sourceEnvVar,
 		})
+	}
+	if !specifiedOnly {
+		infos = append(infos, idiomatic...)
+		configTools := imgCfg.ResolveToolDeps(agentName, userTools, false)
+		for _, dep := range configTools {
+			infos = append(infos, idiomaticInfo{
+				tool:      dep.name,
+				version:   dep.version,
+				configKey: dep.name,
+				source:    sourceConfig,
+			})
+		}
 	}
 	infos = ensureToolInfo(infos, spec)
 
+	var idiomaticPaths []string
+	if !specifiedOnly {
+		idiomaticPaths = uniquePaths(idiomatic)
+	}
+
 	return collectResult{
 		specs:          deduped,
-		idiomaticPaths: uniquePaths(idiomatic), // Only idiomatic files need to be copied
+		idiomaticPaths: idiomaticPaths,
 		idiomaticInfos: infos,
 		userTools:      userTools,
 	}
@@ -494,6 +539,55 @@ func dedupeStrings(items []string) []string {
 		result = append(result, item)
 	}
 	return result
+}
+
+// parseEnvTools parses the AGENT_EN_PLACE_TOOLS environment variable.
+// Format: comma-separated list of tool@version pairs.
+// Examples: "node@latest", "python@3.12", "npm:trello-cli@1.5.0", "npm:@my-org/pkg@2.0.0"
+// If no @version is provided, defaults to "latest".
+// Splits on the last "@" to handle scoped npm packages (e.g. npm:@org/pkg@1.0).
+func parseEnvTools() []toolDescriptor {
+	val := os.Getenv("AGENT_EN_PLACE_TOOLS")
+	if val == "" {
+		return nil
+	}
+	var specs []toolDescriptor
+	for _, entry := range strings.Split(val, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		name, version := splitToolVersion(entry)
+		specs = append(specs, toolDescriptor{name: name, version: version, source: sourceEnvVar})
+	}
+	return specs
+}
+
+// splitToolVersion splits a tool@version string into name and version.
+// It splits on the last "@" to correctly handle scoped npm packages
+// like "npm:@my-org/some-package@1.2.3" where the name is "npm:@my-org/some-package"
+// and the version is "1.2.3".
+// If no "@" is present, or the only "@" is a scope prefix (e.g. "npm:@org/pkg"),
+// the version defaults to "latest".
+func splitToolVersion(entry string) (string, string) {
+	idx := strings.LastIndex(entry, "@")
+	if idx <= 0 {
+		// No "@" at all, or "@" is the first character (bare scoped name like "@org/pkg")
+		return entry, "latest"
+	}
+	name := entry[:idx]
+	version := entry[idx+1:]
+	if version == "" {
+		version = "latest"
+	}
+	// Guard against splitting a scoped npm package with no version.
+	// e.g. "npm:@my-org/some-package" -> LastIndex finds the "@" in the scope.
+	// In this case, name would be "npm:" and version would be "my-org/some-package".
+	// We detect this by checking if the version contains "/" which is not a valid version.
+	if strings.Contains(version, "/") {
+		return entry, "latest"
+	}
+	return name, version
 }
 
 func parseToolVersions(spec *fileSpec) []toolDescriptor {
