@@ -247,6 +247,45 @@ agent-en-place --config ./my-config.yaml claude
 agent-en-place --debug --rebuild opencode
 ```
 
+### Environment Variable Overrides
+
+You can override tool definitions using environment variables, which is useful for when you want to enforce specific tool versions regardless of project configuration files. I use this when I'm working on something quickly and want to use a cached image.
+
+**`AGENT_EN_PLACE_TOOLS`**
+
+A comma-separated list of `tool@version` pairs. When set, these tools take the highest priority -- overriding versions from `mise.toml`, `.tool-versions`, and idiomatic version files. Tools from config files that are **not** specified in the environment variable are still installed.
+
+```bash
+AGENT_EN_PLACE_TOOLS=node@latest,python@3.12 agent-en-place claude
+```
+
+npm-style packages (including scoped packages) are supported:
+
+```bash
+AGENT_EN_PLACE_TOOLS=node@20,npm:trello-cli@1.5.0 agent-en-place claude
+AGENT_EN_PLACE_TOOLS=npm:@my-org/some-package@1.2.3 agent-en-place claude
+```
+
+If you omit the `@version`, it defaults to `latest`:
+
+```bash
+AGENT_EN_PLACE_TOOLS=node,python agent-en-place claude
+```
+
+**`AGENT_EN_PLACE_SPECIFIED_TOOLS_ONLY`**
+
+When set to `1` alongside `AGENT_EN_PLACE_TOOLS`, all file-based tool discovery is skipped. Only the tools listed in `AGENT_EN_PLACE_TOOLS` (plus the agent's own tool) are installed. `.tool-versions`, `mise.toml`, and idiomatic version files are ignored entirely.
+
+```bash
+AGENT_EN_PLACE_TOOLS=node@20,python@3.12 \
+  AGENT_EN_PLACE_SPECIFIED_TOOLS_ONLY=1 \
+  agent-en-place claude
+```
+
+This is useful when you want a minimal, deterministic container with only the tools you explicitly specify.
+
+Note: Setting `AGENT_EN_PLACE_SPECIFIED_TOOLS_ONLY=1` without `AGENT_EN_PLACE_TOOLS` has no effect (a warning is printed to stderr).
+
 ## License
 
 MIT License
