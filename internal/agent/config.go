@@ -41,9 +41,10 @@ type ImageSettings struct {
 	Packages []string `yaml:"packages"`
 }
 
-// MiseSettings defines mise installation commands
+// MiseSettings defines mise installation commands and environment variables
 type MiseSettings struct {
-	Install []string `yaml:"install"`
+	Install []string       `yaml:"install"`
+	Env     map[string]any `yaml:"env"`
 }
 
 // ImageCustomization represents a single customization operation (JSON patch style)
@@ -202,6 +203,16 @@ func mergeConfigs(base, user *ImageConfig) *ImageConfig {
 	// Replace mise install commands if user specified
 	if len(user.Mise.Install) > 0 {
 		result.Mise.Install = user.Mise.Install
+	}
+
+	// Merge mise env vars (user adds/overrides individual keys)
+	if len(user.Mise.Env) > 0 {
+		if result.Mise.Env == nil {
+			result.Mise.Env = make(map[string]any)
+		}
+		for k, v := range user.Mise.Env {
+			result.Mise.Env[k] = v
+		}
 	}
 
 	// Accumulate image customizations from user config

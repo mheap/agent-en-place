@@ -98,7 +98,7 @@ func Run(cfg Config) error {
 
 	collection := collectToolSpecs(toolFile, miseFile, spec, imgCfg, cfg.Tool, cfg.Debug)
 	if cfg.DockerfileOnly {
-		fmt.Print(buildDockerfile(toolFile != nil, miseFile != nil, collection, spec, imgCfg, cfg.Tool))
+		fmt.Print(buildDockerfile(toolFile != nil, miseFile != nil, collection, spec, imgCfg, cfg.Tool, os.Environ()))
 		return nil
 	}
 	if cfg.MiseFileOnly {
@@ -190,7 +190,7 @@ func Run(cfg Config) error {
 
 func makeBuildContext(toolFile, miseFile *fileSpec, collection collectResult, spec ToolSpec, imgCfg *ImageConfig, agentName string) (io.Reader, error) {
 
-	dockerfile := buildDockerfile(toolFile != nil, miseFile != nil, collection, spec, imgCfg, agentName)
+	dockerfile := buildDockerfile(toolFile != nil, miseFile != nil, collection, spec, imgCfg, agentName, os.Environ())
 
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
@@ -241,7 +241,7 @@ func makeBuildContext(toolFile, miseFile *fileSpec, collection collectResult, sp
 	return bytes.NewReader(buf.Bytes()), nil
 }
 
-func buildDockerfile(hasTool, hasMise bool, collection collectResult, spec ToolSpec, imgCfg *ImageConfig, agentName string) string {
+func buildDockerfile(hasTool, hasMise bool, collection collectResult, spec ToolSpec, imgCfg *ImageConfig, agentName string, environ []string) string {
 	var b strings.Builder
 
 	// Use configured base image
@@ -270,7 +270,19 @@ func buildDockerfile(hasTool, hasMise bool, collection collectResult, spec ToolS
 	b.WriteString("RUN rm -rf /var/lib/apt/lists/*\n\n")
 	b.WriteString("RUN groupadd -r agent && useradd -m -r -u 1000 -g agent -s /bin/bash agent\n")
 	b.WriteString("ENV HOME=/home/agent\n")
-	b.WriteString("ENV PATH=\"/home/agent/.local/share/mise/shims:/home/agent/.local/bin:${PATH}\"\n\n")
+	b.WriteString("ENV PATH=\"/home/agent/.local/share/mise/shims:/home/agent/.local/bin:${PATH}\"\n")
+
+	// Forward MISE_* environment variables into the image.
+	// Sources: mise.env from config (lower priority) and host env vars (higher priority).
+	// These are baked in so mise can use them during `mise install` (build time)
+	// and at runtime. MISE_ENV and MISE_SHELL are excluded from host env vars.
+	cfgEnvVars := configMiseEnvVars(imgCfg.Mise.Env)
+	hostEnvVars := collectMiseEnvVars(environ)
+	miseEnvVars := mergeMiseEnvVars(cfgEnvVars, hostEnvVars)
+	for _, kv := range miseEnvVars {
+		b.WriteString(fmt.Sprintf("ENV %s=%q\n", kv[0], kv[1]))
+	}
+	b.WriteString("\n")
 	b.WriteString("RUN mkdir -p /home/agent/.config/mise\n")
 	b.WriteString(buildToolLabels(collection.specs))
 	b.WriteString("WORKDIR /home/agent\n")
@@ -538,6 +550,93 @@ func dedupeStrings(items []string) []string {
 		seen[item] = true
 		result = append(result, item)
 	}
+	return result
+}
+
+// collectMiseEnvVars returns all MISE_* environment variables from the given
+// environ slice (as returned by os.Environ()), sorted by key.
+// MISE_ENV is excluded because it's set at container runtime via docker run -e.
+// Each entry is a [2]string{key, value}.
+func collectMiseEnvVars(environ []string) [][2]string {
+	var result [][2]string
+	for _, env := range environ {
+		if !strings.HasPrefix(env, "MISE_") {
+			continue
+		}
+		idx := strings.IndexByte(env, '=')
+		if idx < 0 {
+			continue
+		}
+		key := env[:idx]
+		value := env[idx+1:]
+		// MISE_ENV is set at runtime via docker run -e, skip it here.
+		// MISE_SHELL is host-specific and not relevant inside the container.
+		if key == "MISE_ENV" || key == "MISE_SHELL" {
+			continue
+		}
+		result = append(result, [2]string{key, value})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i][0] < result[j][0]
+	})
+	return result
+}
+
+// configMiseEnvVars converts the mise.env config map into [][2]string.
+// Keys are uppercased and prefixed with MISE_ (e.g. ruby_compile -> MISE_RUBY_COMPILE).
+// Boolean values are converted to "true"/"false" strings.
+// Returns entries sorted by key.
+func configMiseEnvVars(env map[string]any) [][2]string {
+	if len(env) == 0 {
+		return nil
+	}
+	var result [][2]string
+	for k, v := range env {
+		key := "MISE_" + strings.ToUpper(k)
+		var value string
+		switch val := v.(type) {
+		case bool:
+			if val {
+				value = "true"
+			} else {
+				value = "false"
+			}
+		case string:
+			value = val
+		default:
+			value = fmt.Sprintf("%v", val)
+		}
+		result = append(result, [2]string{key, value})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i][0] < result[j][0]
+	})
+	return result
+}
+
+// mergeMiseEnvVars merges config-based and host-based MISE_ env vars.
+// Host env vars take precedence over config env vars for the same key.
+// Returns the merged list sorted by key.
+func mergeMiseEnvVars(configVars, hostVars [][2]string) [][2]string {
+	seen := make(map[string]string)
+	// Config vars first (lower priority)
+	for _, kv := range configVars {
+		seen[kv[0]] = kv[1]
+	}
+	// Host vars override (higher priority)
+	for _, kv := range hostVars {
+		seen[kv[0]] = kv[1]
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	result := make([][2]string, 0, len(seen))
+	for k, v := range seen {
+		result = append(result, [2]string{k, v})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i][0] < result[j][0]
+	})
 	return result
 }
 

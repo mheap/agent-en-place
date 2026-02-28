@@ -51,6 +51,8 @@ image_customizations:
 mise:
   install:
     - <shell-command>
+  env:
+    <key>: <value>
 ```
 
 ## Section Reference
@@ -185,11 +187,12 @@ This would modify the default packages by adding `build-essential` and `vim`, an
 
 ### `mise`
 
-Configures how mise (the runtime version manager) is installed.
+Configures how mise (the runtime version manager) is installed and its environment variables.
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `install` | list | Shell commands to install mise (joined with `&&`) |
+| `env` | map | Mise environment variables (keys are uppercased and prefixed with `MISE_`) |
 
 **Example:**
 
@@ -198,7 +201,13 @@ mise:
   install:
     - curl https://mise.run | sh
     - echo 'eval "$(~/.local/bin/mise activate bash)"' >> ~/.bashrc
+  env:
+    ruby_compile: false
 ```
+
+The `env` keys are converted to environment variables by uppercasing and prepending `MISE_`. For example, `ruby_compile: false` becomes `ENV MISE_RUBY_COMPILE="false"` in the Dockerfile. Boolean values are converted to `"true"`/`"false"` strings.
+
+These are set as `ENV` directives in the Dockerfile before `mise install`, so they are available both at build time and runtime. Host `MISE_*` environment variables take precedence over config values for the same key.
 
 **Note:** The install commands are joined with `&&` into a single `RUN` statement in the Dockerfile.
 
@@ -214,6 +223,7 @@ When multiple config files are loaded, they are merged with specific rules:
 | `image.packages` | Replaced entirely if specified (not merged) |
 | `image_customizations` | Accumulated (all customizations are collected and applied in order) |
 | `mise.install` | Replaced entirely if specified (not merged) |
+| `mise.env` | Individual keys are added or overridden |
 
 This means you can:
 - Add a new agent without redefining all existing ones
@@ -381,4 +391,6 @@ mise:
     - echo "deb [signed-by=/etc/apt/keyrings/mise-archive-keyring.pub arch=$arch] https://mise.jdx.dev/deb stable main" | tee /etc/apt/sources.list.d/mise.list
     - apt-get update
     - apt-get install -y mise
+  env:
+    ruby_compile: false
 ```
